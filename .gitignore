@@ -1,0 +1,30 @@
+# Secrets — never commit
+.env
+.env.local
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Real market data exports (may contain commercial data; keep the folders, not the files)
+data/raw/**
+!data/raw/**/
+!data/raw/**/.gitkeep
+data/processed/**
+!data/processed/**/
+!data/processed/**/.gitkeep
+
+# Generated reports
+reports/*
+!reports/.gitkeep
+
+# Editors / OS
+.idea/
+.vscode/
+Thumbs.db
+desktop.ini

@@ -1,0 +1,70 @@
+# Niche Score v1 — configuration.
+#
+# The score is a plain weighted average of components, each already scaled to
+# 0-100 and oriented so that HIGHER IS ALWAYS BETTER. Factors that are bad by
+# nature (competition, production cost, monetization risk) are inverted before
+# weighting, which keeps the formula a single sum with no sign juggling.
+#
+# Components that cannot be computed for the current dataset (for example
+# growth, before a second snapshot date exists) are dropped and the remaining
+# weights are renormalized. Nothing is invented to fill a gap.
+version: 1
+score_version: niche_score_v1
+
+# A niche with fewer channels than this is still reported, but flagged as
+# insufficient data and excluded from the ranking: medians over one or two
+# channels say more about those channels than about the niche.
+min_channels_for_scoring: 3
+
+# How many top channels count towards the concentration (competition) measure.
+top_channels_for_concentration: 3
+
+# Below this number of scored niches, percentile ranking is coarse and the
+# ranking is reported as low-confidence.
+low_confidence_niche_count: 5
+
+# Weights must sum to 1.0. Data-derived components carry 0.75 in total,
+# subjective ones 0.25 — the data should dominate, but the practical realities
+# of producing content are not ignored.
+weights:
+  # --- data-derived (from market snapshots) ---
+  audience_value: 0.14        # median CPV: what advertisers pay per view
+  ad_budget_level: 0.10       # median placement price: absolute money in the niche
+  engagement: 0.13            # median ERR
+  reach_efficiency: 0.10      # median views / subscribers
+  market_size: 0.08           # number of channels offered for advertising
+  low_competition: 0.13       # inverted top-N subscriber concentration
+  growth_potential: 0.07      # median subscriber growth between snapshot dates
+  # --- subjective (see manual_defaults / manual_overrides) ---
+  content_scalability: 0.09
+  low_production_cost: 0.06   # inverted production_cost
+  originality_potential: 0.04
+  brand_safety: 0.03
+  low_monetization_risk: 0.03 # inverted monetization_risk
+
+# Subjective ratings, 0-100. These are judgements, not measurements — the
+# reports label them as such.
+#
+# Rubric (same shape for every rating):
+#   0-20   very poor / very hard      60-80  good / easy
+#   20-40  poor / hard                80-100 excellent / trivial
+#   40-60  average
+#
+# While a niche has no override, the neutral default is used, so subjective
+# components cannot silently differentiate niches. Reports state how many
+# niches are still on defaults.
+manual_defaults:
+  content_scalability: 50     # how easily content can be produced at volume
+  production_cost: 50         # inverted; higher cost lowers the score
+  originality_potential: 50   # room for genuinely original material
+  brand_safety: 50            # advertiser-friendliness of the topic
+  monetization_risk: 50       # inverted; platform/regulatory ad restrictions
+
+# Per-niche overrides, keyed by niche slug (see `show-top-niches` for slugs).
+# Example:
+#   manual_overrides:
+#     ai-i-tehnologii:
+#       content_scalability: 85
+#       production_cost: 35
+#       brand_safety: 90
+manual_overrides: {}

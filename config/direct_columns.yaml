@@ -1,0 +1,104 @@
+# Column mapping for market-data exports (Yandex Direct / channel catalogs).
+#
+# Aliases are matched after normalization: lowercase, "ё" -> "е", punctuation
+# stripped, whitespace collapsed. So "Подписчики, чел." matches "подписчики чел".
+# Adding a new export format should only ever mean adding aliases here.
+version: 1
+
+# Import fails with a clear error if any of these cannot be found in the file.
+required:
+  - channel_name
+
+fields:
+  channel_name:
+    - "Канал"
+    - "Название канала"
+    - "Имя канала"
+    - "Площадка"
+    - "Channel"
+    - "Channel name"
+    - "Title"
+
+  channel_url:
+    - "Ссылка"
+    - "Ссылка на канал"
+    - "Адрес"
+    - "URL"
+    - "Link"
+    - "Channel URL"
+
+  channel_external_id:
+    - "ID канала"
+    - "Идентификатор"
+    - "Идентификатор канала"
+    - "Channel ID"
+    - "External ID"
+
+  platform:
+    - "Платформа"
+    - "Мессенджер"
+    - "Platform"
+    - "Messenger"
+
+  category:
+    - "Категория"
+    - "Тематика"
+    - "Рубрика"
+    - "Ниша"
+    - "Category"
+    - "Topic"
+    - "Niche"
+
+  subscribers:
+    - "Подписчики"
+    - "Количество подписчиков"
+    - "Подписчиков"
+    - "Аудитория"
+    - "Subscribers"
+    - "Audience"
+
+  err:
+    - "ERR"
+    - "ERR %"
+    - "Вовлеченность"
+    - "Вовлечённость"
+    - "Engagement rate"
+
+  predicted_views:
+    - "Прогноз просмотров"
+    - "Просмотры"
+    - "Охват"
+    - "Predicted views"
+    - "Views"
+    - "Reach"
+
+  cpv:
+    - "CPV"
+    - "Цена за просмотр"
+    - "Стоимость просмотра"
+    - "Cost per view"
+
+  campaign_price:
+    - "Стоимость размещения"
+    - "Стоимость"
+    - "Цена"
+    - "Бюджет"
+    - "Price"
+    - "Campaign price"
+
+  currency:
+    - "Валюта"
+    - "Currency"
+
+  region:
+    - "Регион"
+    - "Гео"
+    - "Region"
+    - "Geo"
+
+  snapshot_date:
+    - "Дата"
+    - "Дата выгрузки"
+    - "Период"
+    - "Date"
+    - "Snapshot date"

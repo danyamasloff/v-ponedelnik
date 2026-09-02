@@ -1,0 +1,59 @@
+[project]
+name = "channel-factory"
+version = "0.1.0"
+description = "Data-driven Telegram/MAX channel factory: market data import, niche analytics, content pipeline"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "sqlalchemy[asyncio]>=2.0.36",
+    "alembic>=1.14",
+    "asyncpg>=0.30",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "openpyxl>=3.1",
+    "typer>=0.15",
+    "pyyaml>=6.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.8",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/channel_factory"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "N", "UP", "B", "SIM", "C4", "RUF"]
+# RUF001/002/003 flag Cyrillic and typographic characters as "ambiguous". This
+# project normalizes Russian-language market exports, so such characters are
+# domain data (column aliases, "ё"->"е" folding, en-dash handling), not typos.
+ignore = ["RUF001", "RUF002", "RUF003"]
+
+[tool.ruff.lint.per-file-ignores]
+# Typer uses function calls (typer.Option/typer.Argument) as argument defaults by design.
+"src/channel_factory/cli/*.py" = ["B008"]
+# Alembic migration templates are generated code with their own conventions.
+"alembic/versions/*.py" = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+# Fixtures share the test's own event loop: the `database` fixture builds a
+# connection pool that the test body then uses, and asyncpg connections cannot
+# cross event loops.
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "integration: tests that require a running PostgreSQL instance",
+]
