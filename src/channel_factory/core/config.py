@@ -44,8 +44,14 @@ class Settings(BaseSettings):
     max_chat_id: int | None = Field(
         default=None, description="Default channel/chat id to publish into"
     )
-    max_api_base_url: str = "https://platform-api2.max.ru"
+    # Not the host from the docs (platform-api2) on purpose: that one is served
+    # under the Russian Trusted Root CA, absent from certifi and from Windows.
+    max_api_base_url: str = "https://platform-api.max.ru"
     max_request_timeout: float = 30.0
+    max_ca_bundle: Path | None = Field(
+        default=None,
+        description="PEM bundle with an extra root CA, used only for MAX requests",
+    )
     direct_columns_config: Path = PROJECT_ROOT / "config" / "direct_columns.yaml"
     niche_score_config: Path = PROJECT_ROOT / "config" / "niche_score.yaml"
     reports_dir: Path = PROJECT_ROOT / "reports"

@@ -35,7 +35,13 @@ from channel_factory.publishers.max.errors import (
 
 logger = get_logger(__name__)
 
-DEFAULT_BASE_URL = "https://platform-api2.max.ru"
+# The docs name `platform-api2.max.ru`, but that host serves a certificate
+# issued by the Russian Trusted Root CA, which is in neither certifi nor the
+# Windows store — every request fails with CERTIFICATE_VERIFY_FAILED until that
+# root is installed. `platform-api.max.ru` answers the same API with a globally
+# trusted certificate, so it is the default here. Override with
+# MAX_API_BASE_URL (and MAX_CA_BUNDLE) to use the documented host.
+DEFAULT_BASE_URL = "https://platform-api.max.ru"
 
 #: Text limit of one message/post, per the POST /messages reference.
 TEXT_LIMIT = 4000
@@ -74,10 +80,14 @@ class MaxApiClient:
         min_send_interval: float = MIN_SEND_INTERVAL,
         backoff_base: float = 1.0,
         backoff_cap: float = 30.0,
+        ca_bundle: Path | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         if not token:
             raise MaxAuthError("MAX bot token is empty")
+        # Trust stays on. A bundle only adds a root (e.g. the Минцифры one) for
+        # this client, instead of trusting it system-wide.
+        verify: str | bool = str(ca_bundle) if ca_bundle else True
         self._max_attempts = max(1, max_attempts)
         self._min_send_interval = min_send_interval
         self._backoff_base = backoff_base
@@ -88,11 +98,14 @@ class MaxApiClient:
             base_url=base_url.rstrip("/"),
             timeout=timeout,
             transport=transport,
+            verify=verify,
             headers={"Authorization": token, "Accept": "application/json"},
         )
         # Uploads go to a different host (fu./iu./vu.*), so they get their own
         # client: the bot token must not travel to a file-storage domain.
-        self._uploads = httpx.AsyncClient(timeout=upload_timeout, transport=transport)
+        self._uploads = httpx.AsyncClient(
+            timeout=upload_timeout, transport=transport, verify=verify
+        )
 
     async def __aenter__(self) -> MaxApiClient:
         return self

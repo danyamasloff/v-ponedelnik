@@ -6,6 +6,8 @@ application happens to store its configuration.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from channel_factory.core.config import Settings, get_settings
 from channel_factory.publishers.base import PublishError
 from channel_factory.publishers.max.adapter import MaxPublisher
@@ -28,7 +30,18 @@ def build_client(settings: Settings | None = None) -> MaxApiClient:
         settings.max_bot_token.get_secret_value(),
         base_url=settings.max_api_base_url,
         timeout=settings.max_request_timeout,
+        ca_bundle=_ca_bundle(settings),
     )
+
+
+def _ca_bundle(settings: Settings) -> Path | None:
+    """Extra root CA for MAX requests, checked here so the error is readable."""
+    bundle = settings.max_ca_bundle
+    if bundle is None:
+        return None
+    if not bundle.is_file():
+        raise MaxConfigError(f"MAX_CA_BUNDLE points to a missing file: {bundle}")
+    return bundle
 
 
 def resolve_chat_id(chat_id: int | None, settings: Settings | None = None) -> int:
@@ -58,7 +71,10 @@ def build_publisher(
         token = settings.max_bot_token.get_secret_value() if settings.max_bot_token else "dry-run"
         target = chat_id if chat_id is not None else (settings.max_chat_id or 0)
         client = MaxApiClient(
-            token, base_url=settings.max_api_base_url, timeout=settings.max_request_timeout
+            token,
+            base_url=settings.max_api_base_url,
+            timeout=settings.max_request_timeout,
+            ca_bundle=_ca_bundle(settings),
         )
         return client, MaxPublisher(client, target, dry_run=True)
 
