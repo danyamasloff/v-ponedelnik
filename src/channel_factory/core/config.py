@@ -9,7 +9,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url
 
@@ -35,6 +35,17 @@ class Settings(BaseSettings):
     )
     log_level: str = "INFO"
     db_echo: bool = False
+
+    # --- MAX publishing (https://dev.max.ru/docs-api) ---
+    # SecretStr so the token cannot end up in a repr, a log line or a traceback.
+    max_bot_token: SecretStr | None = Field(
+        default=None, description="Bot token issued by MasterBot in the MAX app"
+    )
+    max_chat_id: int | None = Field(
+        default=None, description="Default channel/chat id to publish into"
+    )
+    max_api_base_url: str = "https://platform-api2.max.ru"
+    max_request_timeout: float = 30.0
     direct_columns_config: Path = PROJECT_ROOT / "config" / "direct_columns.yaml"
     niche_score_config: Path = PROJECT_ROOT / "config" / "niche_score.yaml"
     reports_dir: Path = PROJECT_ROOT / "reports"

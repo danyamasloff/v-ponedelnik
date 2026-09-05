@@ -76,6 +76,10 @@ uv run python -m channel_factory.cli --help
 | `analyze-niches` | Метрики по нишам + Niche Score, сохранение прогона |
 | `show-top-niches` | Последнее сохранённое ранжирование |
 | `niche-report` | Отчёты в `reports/` из сохранённого прогона |
+| `max-discover` | Узнать `chat_id` канала MAX из событий бота |
+| `max-check` | Токен, канал и права бота на публикацию |
+| `max-post` | Опубликовать пост в канал MAX |
+| `max-edit-post` / `max-delete-post` | Изменить или удалить свой пост |
 
 ### Импорт выгрузки
 
@@ -143,6 +147,26 @@ uv run python -m channel_factory.cli analyze-niches --report
 
 Подробности формулы — в [docs/niche-score.md](docs/niche-score.md).
 
+### Публикация в MAX
+
+Адаптер для постинга в каналы MAX через официальный Bot API. Бесплатно:
+платных тарифов у Bot API нет. Сделан раньше своей фазы — чтобы можно было
+проверить публикацию на живом канале.
+
+```bash
+uv run python -m channel_factory.cli max-post "Текст поста" --dry-run
+```
+
+`--dry-run` показывает готовое тело запроса и не отправляет ничего — работает
+даже без токена. Для реальной публикации нужны `MAX_BOT_TOKEN` и `MAX_CHAT_ID`
+в `.env`, бот должен быть администратором канала; `max-check` проверяет это до
+первого поста, а `max-discover` подсказывает `chat_id`.
+
+Публикации пока не сохраняются в базу: своя схема для истории постов появится
+в соответствующей фазе.
+
+Подробности — в [docs/max-publishing.md](docs/max-publishing.md).
+
 ## Разработка
 
 ```bash
@@ -173,6 +197,7 @@ src/channel_factory/
     core/        конфигурация, логирование, доменные enum'ы
     db/          модели, репозитории, сессии
     direct/      импорт выгрузок: mapping -> normalization -> importer
+    publishers/  публикация постов: общий контракт + адаптер MAX
     cli/         команды Typer
 alembic/         миграции
 config/          бизнес-конфигурация (маппинг колонок)
