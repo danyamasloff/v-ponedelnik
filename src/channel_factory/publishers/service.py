@@ -48,6 +48,12 @@ from channel_factory.publishers.base import (
 logger = get_logger(__name__)
 
 
+def _rubric(vendor: str | None) -> str:
+    """Small label above the headline. The vendor when we have one, else a
+    neutral word — never an empty strip where a rubric should be."""
+    return (vendor or "новости").strip()
+
+
 @dataclass
 class PublishOutcome:
     """What happened to one post."""
@@ -158,12 +164,17 @@ class PublishingService:
                 CardContent(
                     title=draft.title,
                     vendor=cluster.vendor,
-                    kicker=cluster.vendor or "новости",
+                    kicker=_rubric(cluster.vendor),
                     # The signature, not the source URL: a link is unreadable
                     # at thumbnail size and the card is the channel's face.
                     footer=self._brand.card_footer or None,
+                    brand=self._brand.name,
+                    published_on=datetime.now().astimezone().date(),
                 ),
                 self._cards_dir / f"{cluster.id}.png",
+                # Seeded on the topic, so the style is stable for this post and
+                # differs from the one before it.
+                seed=str(cluster.id),
             )
         except CardRenderError as exc:
             logger.warning(
@@ -266,8 +277,11 @@ class PublishingService:
                     vendor=key,
                     kicker=self._brand.default_kicker,
                     footer=self._brand.card_footer or None,
+                    brand=self._brand.name,
+                    published_on=datetime.now().astimezone().date(),
                 ),
                 self._cards_dir / f"topic-{key}.png",
+                seed=key,
             )
         except CardRenderError as exc:
             logger.warning("content.card.failed", extra={"topic": key, "error": str(exc)})

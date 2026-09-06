@@ -11,7 +11,14 @@ from pathlib import Path
 
 import pytest
 
-from channel_factory.content.cards import CardContent, CardRenderError, accent_for, render_card
+from channel_factory.content.cards import (
+    CardContent,
+    CardRenderError,
+    CardStyle,
+    accent_for,
+    render_card,
+    style_for,
+)
 from channel_factory.content.drafting import fact_line
 from channel_factory.content.generation import (
     MAX_ANALYSIS_CHARS,
@@ -19,6 +26,7 @@ from channel_factory.content.generation import (
     GenerationError,
     clean_analysis,
 )
+from channel_factory.content.identity import initials, render_avatar
 from channel_factory.core.enums import EventType
 from channel_factory.publishers.scheduler import (
     BreakingRules,
@@ -213,3 +221,55 @@ class TestBreakingRules:
 
     def test_it_can_be_switched_off_entirely(self) -> None:
         assert BreakingRules(enabled=False).enabled is False
+
+
+class TestCardStyles:
+    """Every post gets a layout, and the same post always gets the same one."""
+
+    def test_all_five_styles_render(self, tmp_path: Path) -> None:
+        content = CardContent(
+            title="Cursor перестал работать у пользователей из России",
+            vendor="cursor",
+            kicker="рынок",
+            footer="В понедельник · практические навыки",
+            brand="В понедельник",
+        )
+        for style in CardStyle:
+            path = render_card(content, tmp_path / f"{style.value}.png", style=style)
+            assert path.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+
+    def test_style_is_stable_for_a_seed(self) -> None:
+        assert style_for("cluster-1") is style_for("cluster-1")
+
+    def test_different_posts_get_different_styles(self) -> None:
+        """Not a guarantee for any two posts — a guarantee of variety overall."""
+        seeds = [f"cluster-{index}" for index in range(40)]
+        assert len({style_for(seed) for seed in seeds}) == len(CardStyle)
+
+    def test_style_survives_a_missing_date(self, tmp_path: Path) -> None:
+        """The date block falls back to today rather than crashing."""
+        path = render_card(
+            CardContent(title="Заголовок без даты"),
+            tmp_path / "no-date.png",
+            style=CardStyle.ACCENT_BLOCK,
+        )
+        assert path.is_file()
+
+
+class TestIdentity:
+    def test_initials_of_a_two_word_name(self) -> None:
+        assert initials("В понедельник") == "Вп"
+
+    def test_initials_of_a_single_word(self) -> None:
+        assert initials("Понедельник") == "По"
+
+    def test_empty_name_is_refused(self) -> None:
+        with pytest.raises(CardRenderError):
+            initials("   ")
+
+    def test_avatar_is_square(self, tmp_path: Path) -> None:
+        from PIL import Image
+
+        path = render_avatar("В понедельник", tmp_path / "avatar.png")
+        with Image.open(path) as image:
+            assert image.size[0] == image.size[1]

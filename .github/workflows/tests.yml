@@ -9,6 +9,13 @@ jobs:
   tests:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      # Настройки требуют строку подключения, и это правильно: приложение без
+      # базы не работает. Unit-тесты при этом никуда не подключаются — им нужен
+      # лишь разбираемый URL, чтобы собрался объект настроек. Отсюда заглушка:
+      # на runner'е нет .env, а прятать обязательность поля ради тестов значило
+      # бы ослабить проверку конфигурации в бою.
+      DATABASE_URL: postgresql+asyncpg://ci:ci@localhost:5432/ci
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
