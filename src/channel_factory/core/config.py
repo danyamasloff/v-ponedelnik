@@ -123,6 +123,7 @@ class Settings(BaseSettings):
     breaking_max_per_day: int = 2
     breaking_min_gap_minutes: int = 90
     evergreen_topics_config: Path = PROJECT_ROOT / "config" / "evergreen_topics.yaml"
+    brand_config: Path = PROJECT_ROOT / "config" / "brand.yaml"
     # Cards are rendered next to the reports, not into the repository root.
     cards_dir: Path = PROJECT_ROOT / "reports" / "cards"
     telegram_channel_id: str | None = None

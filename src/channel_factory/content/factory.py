@@ -16,6 +16,7 @@ Preference order, and the reason for it:
 
 from __future__ import annotations
 
+from channel_factory.content.brand import load_brand
 from channel_factory.content.generation import (
     AnalysisGenerator,
     GeminiAnalysisGenerator,
@@ -34,11 +35,13 @@ async def build_analysis_generator(
     database: Database, settings: Settings
 ) -> AnalysisGenerator | None:
     """The best available generator, or ``None`` when there is none."""
+    voice = load_brand(settings.brand_config).voice_prompt()
     ollama = OllamaGenerator(base_url=settings.ollama_base_url, model=settings.ollama_model)
     if await ollama.available():
         logger.info(
             "content.generator", extra={"backend": "ollama", "model": settings.ollama_model}
         )
+        ollama.voice = voice
         return ollama
 
     if settings.content_api_base_url and settings.content_api_key and settings.content_model:
@@ -46,15 +49,17 @@ async def build_analysis_generator(
             "content.generator",
             extra={"backend": "openai-compatible", "model": settings.content_model},
         )
-        return OpenAICompatibleGenerator(
+        generator = OpenAICompatibleGenerator(
             base_url=settings.content_api_base_url,
             api_key=settings.content_api_key.get_secret_value(),
             model=settings.content_model,
         )
+        generator.voice = voice
+        return generator
 
     if settings.gemini_api_key:
         logger.info("content.generator", extra={"backend": "gemini"})
-        return GeminiAnalysisGenerator(
+        gemini = GeminiAnalysisGenerator(
             GeminiClient(
                 database,
                 api_key=settings.gemini_api_key,
@@ -62,6 +67,8 @@ async def build_analysis_generator(
                 requests_per_minute=settings.gemini_requests_per_minute,
             )
         )
+        gemini.voice = voice
+        return gemini
 
     logger.warning("content.generator.unavailable")
     return None

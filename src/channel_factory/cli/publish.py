@@ -10,6 +10,7 @@ import typer
 from sqlalchemy import select
 
 from channel_factory.cli.app import app
+from channel_factory.content.brand import load_brand
 from channel_factory.content.evergreen import load_topics
 from channel_factory.content.factory import build_analysis_generator
 from channel_factory.core.config import get_settings
@@ -82,6 +83,7 @@ async def _service(database: Database) -> tuple[MaxApiClient, PublishingService]
         auto_publish_enabled=settings.auto_publish_enabled,
         generator=await build_analysis_generator(database, settings),
         cards_dir=settings.cards_dir,
+        brand=load_brand(settings.brand_config),
     )
     return client, service
 

@@ -1,0 +1,35 @@
+# Ежедневное пополнение запаса тем. Без него конвейер публикации через пару
+# дней упрётся в NO_TOPIC и начнёт брать собственные посты, а потом замолчит.
+name: research
+
+on:
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: research
+  cancel-in-progress: false
+
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      LOG_LEVEL: INFO
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --frozen
+      - run: uv run python -m alembic upgrade head
+      - run: uv run python -m channel_factory.cli research-sync-sources
+      - run: uv run python -m channel_factory.cli research-poll
+      - run: uv run python -m channel_factory.cli research-cluster
+      # Без LLM: бесплатные квоты уходят на тексты постов, а лексикон
+      # справляется с отбором детерминированно.
+      - run: uv run python -m channel_factory.cli score-topics --no-llm --limit 500

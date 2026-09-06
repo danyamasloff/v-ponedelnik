@@ -132,6 +132,9 @@ class AnalysisGenerator(Protocol):
     """Writes post text: the analysis of a news item, or an own post."""
 
     name: str
+    #: Channel tone rules, appended to every prompt. Set by the factory from
+    #: config/brand.yaml so a model and a human write the same channel.
+    voice: str
 
     async def analyse(self, brief: AnalysisBrief) -> GeneratedAnalysis: ...
 
@@ -140,6 +143,17 @@ class AnalysisGenerator(Protocol):
     ) -> dict[str, Any]:
         """Raw JSON answer, so other kinds of post can share the transport."""
         ...
+
+
+def system_prompt(voice: str = "") -> str:
+    """The rubric plus the channel's own tone rules.
+
+    The tone lives in config/brand.yaml so that a human writing by hand and a
+    model writing at 09:00 follow the same instructions.
+    """
+    if not voice:
+        return SYSTEM_PROMPT
+    return "\n\n".join((SYSTEM_PROMPT, voice))
 
 
 def clean_analysis(raw: str, brief: AnalysisBrief) -> str:
@@ -206,6 +220,7 @@ class OllamaGenerator:
     """
 
     name = "ollama"
+    voice = ""
 
     def __init__(
         self,
@@ -261,7 +276,7 @@ class OllamaGenerator:
 
     async def analyse(self, brief: AnalysisBrief) -> GeneratedAnalysis:
         data = await self.complete_json(
-            system=SYSTEM_PROMPT, user=brief.as_prompt(), schema=ANALYSIS_SCHEMA
+            system=system_prompt(self.voice), user=brief.as_prompt(), schema=ANALYSIS_SCHEMA
         )
         return _analysis_from(data, brief, backend=self.name, model=self._model)
 
@@ -275,6 +290,7 @@ class GeminiAnalysisGenerator:
     """
 
     name = "gemini"
+    voice = ""
 
     def __init__(self, client: Any) -> None:
         self._client = client
@@ -299,7 +315,7 @@ class GeminiAnalysisGenerator:
 
     async def analyse(self, brief: AnalysisBrief) -> GeneratedAnalysis:
         data = await self.complete_json(
-            system=SYSTEM_PROMPT, user=brief.as_prompt(), schema=ANALYSIS_SCHEMA
+            system=system_prompt(self.voice), user=brief.as_prompt(), schema=ANALYSIS_SCHEMA
         )
         return _analysis_from(data, brief, backend=self.name, model=str(data.get("_model")))
 
@@ -348,6 +364,7 @@ class OpenAICompatibleGenerator:
     """
 
     name = "openai-compatible"
+    voice = ""
 
     def __init__(
         self,
@@ -403,6 +420,6 @@ class OpenAICompatibleGenerator:
 
     async def analyse(self, brief: AnalysisBrief) -> GeneratedAnalysis:
         data = await self.complete_json(
-            system=SYSTEM_PROMPT, user=brief.as_prompt(), schema=ANALYSIS_SCHEMA
+            system=system_prompt(self.voice), user=brief.as_prompt(), schema=ANALYSIS_SCHEMA
         )
         return _analysis_from(data, brief, backend=self.name, model=self._model)

@@ -1,0 +1,21 @@
+name: tests
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --frozen
+      # Unit-тесты не требуют базы; интеграционные запускаются локально против
+      # реального PostgreSQL, как описано в README.
+      - run: uv run python -m ruff check .
+      - run: uv run python -m pytest tests/unit -q

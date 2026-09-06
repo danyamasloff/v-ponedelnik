@@ -1,0 +1,62 @@
+# Ежечасный прогон публикации. Команда сама решает, нужен ли пост прямо сейчас:
+# слот может быть закрыт, уже заполнен или занят срочной новостью.
+#
+# Почему час, а не точное время слота: cron в GitHub Actions не гарантирует
+# минуту запуска, а окно слота (PUBLISH_SLOT_WINDOW_MINUTES) как раз для этого
+# и сделано — пропущенный запуск наверстывается следующим.
+name: publish
+
+on:
+  schedule:
+    - cron: "5 * * * *"
+  workflow_dispatch:
+    inputs:
+      preflight_only:
+        description: "Только проверить доступ к MAX и базе, ничего не публиковать"
+        type: boolean
+        default: false
+
+concurrency:
+  # Два прогона одновременно не нужны: слот всё равно один.
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      MAX_BOT_TOKEN: ${{ secrets.MAX_BOT_TOKEN }}
+      MAX_CHAT_ID: ${{ secrets.MAX_CHAT_ID }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      CONTENT_API_BASE_URL: ${{ secrets.CONTENT_API_BASE_URL }}
+      CONTENT_API_KEY: ${{ secrets.CONTENT_API_KEY }}
+      CONTENT_MODEL: ${{ secrets.CONTENT_MODEL }}
+      PUBLISH_MODE: ${{ vars.PUBLISH_MODE || 'DRY_RUN' }}
+      AUTO_PUBLISH_ENABLED: ${{ vars.AUTO_PUBLISH_ENABLED || 'false' }}
+      LOG_LEVEL: INFO
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - run: uv sync --frozen
+
+      # Проверка связи до всего остального: сюда же смотрим, доступен ли MAX
+      # Bot API с зарубежного runner'а. Если нет — конвейеру здесь не место,
+      # и это выяснится на первом же запуске, а не в день публикации.
+      - name: Проверить доступ
+        run: |
+          uv run python -m channel_factory.cli db-status
+          uv run python -m channel_factory.cli max-check
+
+      - name: Применить миграции
+        if: ${{ !inputs.preflight_only }}
+        run: uv run python -m alembic upgrade head
+
+      - name: Опубликовать, если пора
+        if: ${{ !inputs.preflight_only }}
+        run: uv run python -m channel_factory.cli publish-due

@@ -21,6 +21,8 @@ from pathlib import Path
 
 from sqlalchemy import select
 
+from channel_factory.content.brand import DEFAULT as DEFAULT_BRAND
+from channel_factory.content.brand import Brand
 from channel_factory.content.cards import CardContent, CardRenderError, render_card
 from channel_factory.content.drafting import PostDraft, render_draft
 from channel_factory.content.evergreen import EvergreenTopic, write_post
@@ -72,6 +74,7 @@ class PublishingService:
         auto_publish_enabled: bool = False,
         generator: AnalysisGenerator | None = None,
         cards_dir: Path | None = None,
+        brand: Brand | None = None,
     ) -> None:
         self._database = database
         self._publisher = publisher
@@ -80,6 +83,7 @@ class PublishingService:
         self._auto_publish_enabled = auto_publish_enabled
         self._generator = generator
         self._cards_dir = cards_dir
+        self._brand = brand or DEFAULT_BRAND
 
     async def draft_for_cluster(self, cluster: ResearchCluster) -> PostDraft:
         """Build the skeleton for a cluster, including its primary source."""
@@ -152,10 +156,12 @@ class PublishingService:
         try:
             path = render_card(
                 CardContent(
-                    title=cluster.canonical_title,
+                    title=draft.title,
                     vendor=cluster.vendor,
-                    kicker=cluster.vendor or "новости ИИ",
-                    footer=draft.sources[0] if draft.sources else None,
+                    kicker=cluster.vendor or "новости",
+                    # The signature, not the source URL: a link is unreadable
+                    # at thumbnail size and the card is the channel's face.
+                    footer=self._brand.card_footer or None,
                 ),
                 self._cards_dir / f"{cluster.id}.png",
             )
@@ -255,7 +261,12 @@ class PublishingService:
             return None
         try:
             path = render_card(
-                CardContent(title=headline, vendor=key, kicker="разбор", footer=None),
+                CardContent(
+                    title=headline,
+                    vendor=key,
+                    kicker=self._brand.default_kicker,
+                    footer=self._brand.card_footer or None,
+                ),
                 self._cards_dir / f"topic-{key}.png",
             )
         except CardRenderError as exc:
