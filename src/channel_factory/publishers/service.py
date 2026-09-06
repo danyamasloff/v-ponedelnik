@@ -23,6 +23,7 @@ from sqlalchemy import select
 
 from channel_factory.content.cards import CardContent, CardRenderError, render_card
 from channel_factory.content.drafting import PostDraft, render_draft
+from channel_factory.content.evergreen import EvergreenTopic, write_post
 from channel_factory.content.generation import (
     AnalysisBrief,
     AnalysisGenerator,
@@ -102,6 +103,7 @@ class PublishingService:
             text_limit=self._publisher.text_limit,
             analysis=generated.text if generated else None,
             headline=generated.headline if generated else None,
+            action=generated.action if generated else None,
         )
 
     async def _analyse(
@@ -160,6 +162,99 @@ class PublishingService:
             logger.warning(
                 "content.card.failed", extra={"cluster": str(cluster.id), "error": str(exc)}
             )
+            return None
+        return MediaItem.from_path(path)
+
+    async def publish_topic(self, topic: EvergreenTopic) -> PublishOutcome:
+        """Write and publish one of our own posts.
+
+        Same switches, same validation, same publications row as a news post —
+        only the source of the text differs. Anything the generator cannot
+        write is a BLOCKED row, never a half-post in the channel.
+        """
+        if self._generator is None:
+            raise PublishError(
+                "нет генератора текста: настройте Ollama, CONTENT_API_* или GEMINI_API_KEY"
+            )
+        post = await write_post(self._generator, topic)
+        draft = PostDraft(
+            platform=self._publisher.platform,
+            text=post.text,
+            title=post.headline,
+            cluster_id="",
+            sources=[],
+            placeholders=[],
+        )
+        card = self._render_own_card(post.headline, topic.key)
+        request = PublishRequest(
+            text=draft.text,
+            channel_ref=self._channel_ref or "",
+            media=(card,) if card else (),
+        )
+        problems = self._publisher.validate(request)
+        payload = self._publisher.build_payload(request)
+        attachments = [{"type": card.kind.value, "source": card.label}] if card else []
+
+        if problems:
+            return await self._record(
+                draft,
+                payload,
+                attachments=attachments,
+                status=PublicationStatus.BLOCKED,
+                reason="собственный пост не прошёл проверку",
+                problems=problems,
+                topic_key=topic.key,
+            )
+        if not self._auto_publish_enabled:
+            return await self._record(
+                draft,
+                payload,
+                attachments=attachments,
+                status=PublicationStatus.BLOCKED,
+                reason="AUTO_PUBLISH_ENABLED=false",
+                topic_key=topic.key,
+            )
+        if self._mode is PublishMode.DRY_RUN:
+            return await self._record(
+                draft,
+                payload,
+                attachments=attachments,
+                status=PublicationStatus.SIMULATED,
+                reason="PUBLISH_MODE=DRY_RUN: ничего не отправлено",
+                topic_key=topic.key,
+            )
+
+        try:
+            result = await self._publisher.publish(request)
+        except PublishError as exc:
+            return await self._record(
+                draft,
+                payload,
+                attachments=attachments,
+                status=PublicationStatus.FAILED,
+                reason=str(exc),
+                topic_key=topic.key,
+            )
+        return await self._record(
+            draft,
+            payload,
+            attachments=attachments,
+            status=PublicationStatus.PUBLISHED,
+            external_message_id=result.external_message_id,
+            topic_key=topic.key,
+        )
+
+    def _render_own_card(self, headline: str, key: str) -> MediaItem | None:
+        """Card for an own post: the headline is all it needs."""
+        if self._cards_dir is None:
+            return None
+        try:
+            path = render_card(
+                CardContent(title=headline, vendor=key, kicker="разбор", footer=None),
+                self._cards_dir / f"topic-{key}.png",
+            )
+        except CardRenderError as exc:
+            logger.warning("content.card.failed", extra={"topic": key, "error": str(exc)})
             return None
         return MediaItem.from_path(path)
 
@@ -250,13 +345,15 @@ class PublishingService:
         problems: list[str] | None = None,
         external_message_id: str | None = None,
         attachments: list[dict] | None = None,
+        topic_key: str | None = None,
     ) -> PublishOutcome:
         async with self._database.session() as session:
             publication = Publication(
                 platform=self._publisher.platform,
                 mode=self._mode,
                 status=status,
-                research_cluster_id=uuid.UUID(draft.cluster_id),
+                research_cluster_id=uuid.UUID(draft.cluster_id) if draft.cluster_id else None,
+                topic_key=topic_key,
                 channel_ref=self._channel_ref or "-",
                 external_message_id=external_message_id,
                 text=draft.text,

@@ -10,6 +10,7 @@ import typer
 from sqlalchemy import select
 
 from channel_factory.cli.app import app
+from channel_factory.content.evergreen import load_topics
 from channel_factory.content.factory import build_analysis_generator
 from channel_factory.core.config import get_settings
 from channel_factory.core.enums import ClusterStatus, PublicationStatus, PublishMode
@@ -24,6 +25,7 @@ from channel_factory.publishers.scheduler import (
     OCCUPYING_STATUSES,
     PostingScheduler,
     SchedulerAction,
+    parse_own_slots,
     parse_slots,
 )
 from channel_factory.publishers.service import PublishingService
@@ -38,6 +40,19 @@ STATUS_COLORS = {
 
 def _database() -> Database:
     return Database(get_settings().database_url)
+
+
+def _scheduler(database: Database, service: PublishingService) -> PostingScheduler:
+    """Scheduler wired from settings, including which slots are ours to write."""
+    settings = get_settings()
+    return PostingScheduler(
+        database,
+        service,
+        slot_times=parse_slots(settings.publish_slots),
+        window=timedelta(minutes=settings.publish_slot_window_minutes),
+        own_slot_indexes=parse_own_slots(settings.publish_own_slots),
+        topics_path=settings.evergreen_topics_config,
+    )
 
 
 async def _service(database: Database) -> tuple[MaxApiClient, PublishingService]:
@@ -224,13 +239,7 @@ async def _publish_due(moment: datetime | None) -> None:
     client = None
     try:
         client, service = await _service(database)
-        scheduler = PostingScheduler(
-            database,
-            service,
-            slot_times=parse_slots(settings.publish_slots),
-            window=timedelta(minutes=settings.publish_slot_window_minutes),
-        )
-        result = await scheduler.run_once(moment)
+        result = await _scheduler(database, service).run_once(moment)
 
         if result.slot is not None:
             typer.echo(f"Слот       : {result.slot.label}")
@@ -276,26 +285,36 @@ async def _publish_plan(days: int) -> None:
     client = None
     try:
         client, service = await _service(database)
-        scheduler = PostingScheduler(
-            database,
-            service,
-            slot_times=parse_slots(settings.publish_slots),
-            window=timedelta(minutes=settings.publish_slot_window_minutes),
-        )
+        scheduler = _scheduler(database, service)
         window = settings.publish_slot_window_minutes
         typer.echo(f"Слоты в день: {settings.publish_slots}  (окно {window} мин)")
         available = len(await _selected_unpublished(database))
-        typer.echo(f"Готовых тем : {available}")
+        own_left = await _own_topics_left(scheduler)
+        own_slots = sorted(parse_own_slots(settings.publish_own_slots))
+        typer.echo(f"Новостных тем: {available}")
+        typer.echo(f"Своих тем    : {own_left}")
+        typer.echo(f"Свои слоты   : {own_slots if own_slots else 'нет'} (индексы в PUBLISH_SLOTS)")
         typer.echo("")
         for slot in await scheduler.upcoming(days=days):
             filled = await scheduler.slot_filled(slot)
+            kind = "свой пост" if slot.index in scheduler.own_slot_indexes else "новость"
             mark = "занят" if filled else "свободен"
             color = typer.colors.GREEN if filled else typer.colors.YELLOW
-            typer.secho(f"{slot.label}  {mark}", fg=color)
+            typer.secho(f"{slot.label}  {mark:<9} {kind}", fg=color)
     finally:
         if client is not None:
             await client.aclose()
         await database.dispose()
+
+
+async def _own_topics_left(scheduler: PostingScheduler) -> int:
+    """How many of our own topics are still unpublished."""
+    try:
+        topics = load_topics(get_settings().evergreen_topics_config)
+    except Exception:
+        return 0
+    published = await scheduler.published_topic_keys()
+    return sum(1 for topic in topics if topic.key not in published)
 
 
 async def _selected_unpublished(database: Database) -> list[uuid.UUID]:

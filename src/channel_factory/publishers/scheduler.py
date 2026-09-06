@@ -26,9 +26,11 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
 from enum import StrEnum
+from pathlib import Path
 
 from sqlalchemy import select
 
+from channel_factory.content.evergreen import EvergreenTopic, load_topics
 from channel_factory.core.enums import ClusterStatus, PublicationStatus
 from channel_factory.core.logging import get_logger
 from channel_factory.db.models import Publication, ResearchCluster
@@ -92,6 +94,20 @@ def parse_slots(spec: str) -> tuple[time, ...]:
     return tuple(sorted(times))
 
 
+def parse_own_slots(spec: str) -> frozenset[int]:
+    """Parse ``"1"`` or ``"0,2"`` into slot indexes we write ourselves."""
+    indexes: set[int] = set()
+    for chunk in spec.split(","):
+        raw = chunk.strip()
+        if not raw:
+            continue
+        try:
+            indexes.add(int(raw))
+        except ValueError as exc:
+            raise ValueError(f"bad own-slot index {raw!r}, expected a number") from exc
+    return frozenset(indexes)
+
+
 def slots_for_day(day: datetime, slot_times: tuple[time, ...], window: timedelta) -> list[Slot]:
     """Every slot of one calendar day, in the day's own timezone."""
     return [
@@ -128,11 +144,18 @@ class PostingScheduler:
         *,
         slot_times: tuple[time, ...],
         window: timedelta,
+        own_slot_indexes: frozenset[int] = frozenset(),
+        topics_path: Path | None = None,
     ) -> None:
         self._database = database
         self._service = service
         self._slot_times = slot_times
         self._window = window
+        # Which slots of the day belong to our own posts rather than to news.
+        # A channel that only reacts to other people's releases has no voice of
+        # its own, so this is a deliberate reservation, not a fallback.
+        self._own_slot_indexes = own_slot_indexes
+        self._topics_path = topics_path
 
     async def run_once(self, now: datetime | None = None) -> SchedulerOutcome:
         """Fill the currently open slot, or explain why nothing was posted."""
@@ -151,14 +174,38 @@ class PostingScheduler:
                 detail="в этом слоте уже был пост",
             )
 
+        # An own slot is written by us; a news slot falls back to an own post
+        # when research has nothing left, because a silent slot helps nobody.
+        if slot.index in self._own_slot_indexes:
+            topic = await self.next_topic()
+            if topic is not None:
+                logger.info(
+                    "scheduler.publishing.own",
+                    extra={"slot": slot.label, "topic": topic.key},
+                )
+                outcome = await self._service.publish_topic(topic)
+                return SchedulerOutcome(
+                    action=SchedulerAction.ATTEMPTED, slot=slot, outcome=outcome
+                )
+
         cluster = await self.next_cluster()
         if cluster is None:
+            topic = await self.next_topic()
+            if topic is not None:
+                logger.info(
+                    "scheduler.publishing.own",
+                    extra={"slot": slot.label, "topic": topic.key, "reason": "no news"},
+                )
+                outcome = await self._service.publish_topic(topic)
+                return SchedulerOutcome(
+                    action=SchedulerAction.ATTEMPTED, slot=slot, outcome=outcome
+                )
             return SchedulerOutcome(
                 action=SchedulerAction.NO_TOPIC,
                 slot=slot,
                 detail=(
-                    "нет отобранных тем: запустите research-poll, "
-                    "research-cluster и score-topics"
+                    "нет ни отобранных новостей, ни неопубликованных собственных тем: "
+                    "пополните config/evergreen_topics.yaml или запустите research-poll"
                 ),
             )
 
@@ -205,6 +252,37 @@ class PostingScheduler:
         for cluster in clusters:
             if cluster.id not in published:
                 return cluster
+        return None
+
+    @property
+    def own_slot_indexes(self) -> frozenset[int]:
+        return self._own_slot_indexes
+
+    async def published_topic_keys(self) -> set[str]:
+        """Own topics already used, so a report can count what is left."""
+        async with self._database.session() as session:
+            used = await session.execute(
+                select(Publication.topic_key).where(
+                    Publication.status.in_(OCCUPYING_STATUSES),
+                    Publication.topic_key.is_not(None),
+                )
+            )
+        return {row for row in used.scalars().all() if row}
+
+    async def next_topic(self) -> EvergreenTopic | None:
+        """First own topic that has not been published yet."""
+        if self._topics_path is None:
+            return None
+        try:
+            topics = load_topics(self._topics_path)
+        except Exception as exc:
+            logger.warning("scheduler.topics_unreadable", extra={"error": str(exc)})
+            return None
+
+        published = await self.published_topic_keys()
+        for topic in topics:
+            if topic.key not in published:
+                return topic
         return None
 
     async def upcoming(self, days: int = 1, now: datetime | None = None) -> list[Slot]:

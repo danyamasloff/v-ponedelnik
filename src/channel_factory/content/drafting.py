@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from channel_factory.content.access import audience_can_open
 from channel_factory.core.enums import EventType, Platform
 
 ANALYSIS_PLACEHOLDER = "[TODO PHASE 5: оригинальный разбор — что читатель сможет сделать]"
@@ -127,6 +128,7 @@ def render_draft(
     text_limit: int = 4000,
     analysis: str | None = None,
     headline: str | None = None,
+    action: str | None = None,
 ) -> PostDraft:
     """Assemble the post for one platform.
 
@@ -146,12 +148,21 @@ def render_draft(
 
     lines += [analysis.strip() if analysis and analysis.strip() else ANALYSIS_PLACEHOLDER, ""]
 
+    if action and action.strip():
+        lines += [f"Что сделать: {action.strip()}", ""]
+
+    # The link is printed only when the audience can actually open it. A
+    # source they cannot reach is still credited — by name, without a URL —
+    # because attribution is owed to the source, while a dead link is owed to
+    # nobody. See content/access.py for why the default is "do not print".
     sources: list[str] = []
     if primary_url:
         label = primary_source or "источник"
-        suffix = f" ({trust})" if trust else ""
-        lines.append(f"Источник: {label}{suffix} — {primary_url}")
-        sources.append(primary_url)
+        if audience_can_open(primary_url):
+            lines.append(f"Источник: {label} — {primary_url}")
+            sources.append(primary_url)
+        else:
+            lines.append(f"Источник: {label} (на английском, без ссылки)")
 
     text = "\n".join(lines).strip()
     if len(text) > text_limit:

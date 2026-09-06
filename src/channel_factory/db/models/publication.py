@@ -48,6 +48,10 @@ class Publication(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
 
     channel_ref: Mapped[str] = mapped_column(String(128), nullable=False)
+
+    # Own posts have no research cluster, so this is what says "already
+    # published" for them. Null for everything driven by research.
+    topic_key: Mapped[str | None] = mapped_column(String(160), nullable=True, index=True)
     external_message_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
     text: Mapped[str] = mapped_column(Text, nullable=False)

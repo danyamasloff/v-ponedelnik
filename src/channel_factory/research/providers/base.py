@@ -35,6 +35,10 @@ class SourceConfig:
     enabled: bool = True
     poll_interval_minutes: int = 60
     reason: str | None = None
+    # Whether the channel's audience can open this source. MAX is a Russian
+    # network: a link its readers cannot follow is worse than no link, so a
+    # source marked VPN is credited by name and its URL is left out of posts.
+    audience_access: str = "VPN"
     config: dict[str, Any] = field(default_factory=dict)
 
 

@@ -102,6 +102,11 @@ class Settings(BaseSettings):
     # How long after a slot opens it may still be filled. Wider than the gap
     # between runs, so a missed run does not silently skip a post.
     publish_slot_window_minutes: int = 180
+    # Which slots of the day carry our own posts instead of news, as 0-based
+    # indexes into PUBLISH_SLOTS. The middle slot by default: a channel that
+    # only reacts to other people's releases never develops a voice.
+    publish_own_slots: str = "1"
+    evergreen_topics_config: Path = PROJECT_ROOT / "config" / "evergreen_topics.yaml"
     # Cards are rendered next to the reports, not into the repository root.
     cards_dir: Path = PROJECT_ROOT / "reports" / "cards"
     telegram_channel_id: str | None = None

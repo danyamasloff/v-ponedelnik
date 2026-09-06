@@ -31,6 +31,10 @@ TOPIC_COMPONENTS = (
 LLM_COMPONENTS = frozenset({"relevance", "practical_value", "audience_fit", "content_potential"})
 
 
+#: Can the channel's audience open this source without a VPN?
+AUDIENCE_ACCESS_VALUES = frozenset({"RU", "VPN"})
+
+
 class ResearchConfigError(Exception):
     """Raised when research configuration is invalid."""
 
@@ -153,6 +157,15 @@ def load_source_configs(path: Path) -> list[SourceConfig]:
         if provider is ResearchProviderType.GITHUB_RELEASES and not repo:
             raise ResearchConfigError(f"source {key!r}: GITHUB_RELEASES requires a repo")
 
+        # Default VPN, not RU: assuming a foreign source is reachable is the
+        # mistake that puts dead links in front of readers.
+        access = str(entry.get("audience_access", "VPN")).upper()
+        if access not in AUDIENCE_ACCESS_VALUES:
+            raise ResearchConfigError(
+                f"source {key!r}: audience_access must be one of "
+                f"{sorted(AUDIENCE_ACCESS_VALUES)}, got {access!r}"
+            )
+
         sources.append(
             SourceConfig(
                 key=key,
@@ -166,6 +179,7 @@ def load_source_configs(path: Path) -> list[SourceConfig]:
                     entry.get("poll_interval_minutes", default_interval)
                 ),
                 reason=entry.get("reason"),
+                audience_access=access,
                 config=entry.get("config") or {},
             )
         )

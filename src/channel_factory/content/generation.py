@@ -51,12 +51,15 @@ MIN_ANALYSIS_CHARS = 80
 SYSTEM_PROMPT = """Ты редактор Telegram/MAX-канала о практическом применении ИИ.
 Пишешь по-русски, коротко и по делу, без рекламных восклицаний и без эмодзи.
 
-Нужно два поля JSON:
+Нужно три поля JSON:
 * "headline" — заголовок поста по-русски, до 90 символов, без кликбейта и без
   точки в конце. Если исходный заголовок на другом языке, передай его смысл
   по-русски, а не переводи дословно;
 * "analysis" — 2–4 предложения о том, **что это меняет для читателя**:
-  практика, а не пересказ новости.
+  практика, а не пересказ новости;
+* "action" — один конкретный шаг, который читатель может сделать сегодня,
+  одно предложение до 200 символов. Без ссылок. Если из фактов ничего
+  практического не следует — верни пустую строку, не выдумывай.
 
 Жёсткие правила:
 * не пересказывай текст источника и не цитируй его;
@@ -71,12 +74,17 @@ ANALYSIS_SCHEMA: dict[str, Any] = {
     "properties": {
         "headline": {"type": "string"},
         "analysis": {"type": "string"},
+        "action": {"type": "string"},
     },
     "required": ["headline", "analysis"],
 }
 
 #: A headline longer than this stops being a headline.
 MAX_HEADLINE_CHARS = 110
+
+#: The practical step is one sentence. Longer than this and it is a second
+#: analysis paragraph pretending to be advice.
+MAX_ACTION_CHARS = 220
 
 
 class GenerationError(Exception):
@@ -117,14 +125,21 @@ class GeneratedAnalysis:
     backend: str
     model: str
     headline: str | None = None
+    action: str | None = None
 
 
 class AnalysisGenerator(Protocol):
-    """Writes the analysis paragraph for one news item."""
+    """Writes post text: the analysis of a news item, or an own post."""
 
     name: str
 
     async def analyse(self, brief: AnalysisBrief) -> GeneratedAnalysis: ...
+
+    async def complete_json(
+        self, *, system: str, user: str, schema: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Raw JSON answer, so other kinds of post can share the transport."""
+        ...
 
 
 def clean_analysis(raw: str, brief: AnalysisBrief) -> str:
@@ -167,6 +182,22 @@ def clean_headline(raw: str) -> str | None:
     return text
 
 
+def clean_action(raw: str) -> str | None:
+    """The one practical step, or nothing.
+
+    Nothing is an acceptable answer and the prompt says so: not every release
+    gives the reader something to do today, and inventing a step would be
+    exactly the padding that makes a channel unreadable.
+    """
+    text = " ".join(raw.strip().strip('"').strip("`").split())
+    if not text or len(text) > MAX_ACTION_CHARS:
+        return None
+    # A step that is just a link is not a step.
+    if text.startswith("http") or " " not in text:
+        return None
+    return text
+
+
 class OllamaGenerator:
     """Local model over the Ollama HTTP API.
 
@@ -201,18 +232,21 @@ class OllamaGenerator:
         # Ollama reports "name:tag"; a bare model name counts as a match.
         return any(name == self._model or name.startswith(f"{self._model}:") for name in names)
 
-    async def analyse(self, brief: AnalysisBrief) -> GeneratedAnalysis:
+    async def complete_json(
+        self, *, system: str, user: str, schema: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """One JSON answer. The shared transport for every kind of post."""
         payload = {
             "model": self._model,
-            "prompt": brief.as_prompt(),
-            "system": SYSTEM_PROMPT,
+            "prompt": user,
+            "system": system,
             "stream": False,
             # Ollama can constrain decoding to valid JSON, which is what the
-            # two-field contract above needs.
+            # field contracts above need.
             "format": "json",
-            # Low temperature: this is analysis grounded in given facts, not
+            # Low temperature: these prompts are grounded in given facts, not
             # creative writing, and a wandering model invents details.
-            "options": {"temperature": 0.4, "num_predict": 400},
+            "options": {"temperature": 0.4, "num_predict": 1200},
         }
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
@@ -223,13 +257,13 @@ class OllamaGenerator:
             raise GenerationError(f"Ollama HTTP {response.status_code}: {response.text[:200]}")
 
         raw = str(response.json().get("response") or "")
-        data = _as_json(raw)
-        return GeneratedAnalysis(
-            text=clean_analysis(str(data.get("analysis") or raw), brief),
-            backend=self.name,
-            model=self._model,
-            headline=clean_headline(str(data.get("headline") or "")),
+        return {**_as_json(raw), "_raw": raw, "_model": self._model}
+
+    async def analyse(self, brief: AnalysisBrief) -> GeneratedAnalysis:
+        data = await self.complete_json(
+            system=SYSTEM_PROMPT, user=brief.as_prompt(), schema=ANALYSIS_SCHEMA
         )
+        return _analysis_from(data, brief, backend=self.name, model=self._model)
 
 
 class GeminiAnalysisGenerator:
@@ -245,27 +279,46 @@ class GeminiAnalysisGenerator:
     def __init__(self, client: Any) -> None:
         self._client = client
 
-    async def analyse(self, brief: AnalysisBrief) -> GeneratedAnalysis:
+    async def complete_json(
+        self, *, system: str, user: str, schema: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """One JSON answer through the research engine's Gemini client."""
         try:
             result = await self._client.structured(
                 task=AiTaskType.CONTENT_DRAFT,
-                system=SYSTEM_PROMPT,
-                user=brief.as_prompt(),
-                schema=ANALYSIS_SCHEMA,
-                max_tokens=800,
+                system=system,
+                user=user,
+                schema=schema or ANALYSIS_SCHEMA,
+                max_tokens=2048,
             )
         except Exception as exc:  # provider errors are many; the caller sees one
             raise GenerationError(f"Gemini generation failed: {exc}") from exc
 
         data = result.data if isinstance(getattr(result, "data", None), dict) else {}
-        raw = str(data.get("analysis") or "")
-        model = getattr(result, "model", None) or "gemini"
-        return GeneratedAnalysis(
-            text=clean_analysis(raw, brief),
-            backend=self.name,
-            model=model,
-            headline=clean_headline(str(data.get("headline") or "")),
+        return {**data, "_model": getattr(result, "model", None) or "gemini"}
+
+    async def analyse(self, brief: AnalysisBrief) -> GeneratedAnalysis:
+        data = await self.complete_json(
+            system=SYSTEM_PROMPT, user=brief.as_prompt(), schema=ANALYSIS_SCHEMA
         )
+        return _analysis_from(data, brief, backend=self.name, model=str(data.get("_model")))
+
+
+def _analysis_from(
+    data: dict[str, Any], brief: AnalysisBrief, *, backend: str, model: str
+) -> GeneratedAnalysis:
+    """Build the result from whatever fields the backend returned.
+
+    ``_raw`` is the fallback for endpoints that ignored the JSON instruction:
+    their whole answer is then treated as the analysis text.
+    """
+    return GeneratedAnalysis(
+        text=clean_analysis(str(data.get("analysis") or data.get("_raw") or ""), brief),
+        backend=backend,
+        model=model,
+        headline=clean_headline(str(data.get("headline") or "")),
+        action=clean_action(str(data.get("action") or "")),
+    )
 
 
 def _as_json(raw: str) -> dict[str, Any]:
@@ -309,15 +362,18 @@ class OpenAICompatibleGenerator:
         self._model = model
         self._timeout = timeout
 
-    async def analyse(self, brief: AnalysisBrief) -> GeneratedAnalysis:
+    async def complete_json(
+        self, *, system: str, user: str, schema: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """One JSON answer from any OpenAI-shaped endpoint."""
         payload = {
             "model": self._model,
             "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": brief.as_prompt()},
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
             ],
             "temperature": 0.4,
-            "max_tokens": 700,
+            "max_tokens": 2000,
             "response_format": {"type": "json_object"},
         }
         headers = {
@@ -343,10 +399,10 @@ class OpenAICompatibleGenerator:
         except (KeyError, IndexError, TypeError, ValueError) as exc:
             raise GenerationError(f"unexpected answer shape: {response.text[:200]}") from exc
 
-        data = _as_json(str(content))
-        return GeneratedAnalysis(
-            text=clean_analysis(str(data.get("analysis") or content), brief),
-            backend=self.name,
-            model=self._model,
-            headline=clean_headline(str(data.get("headline") or "")),
+        return {**_as_json(str(content)), "_raw": str(content), "_model": self._model}
+
+    async def analyse(self, brief: AnalysisBrief) -> GeneratedAnalysis:
+        data = await self.complete_json(
+            system=SYSTEM_PROMPT, user=brief.as_prompt(), schema=ANALYSIS_SCHEMA
         )
+        return _analysis_from(data, brief, backend=self.name, model=self._model)

@@ -10,6 +10,13 @@
 #   REPUTABLE_SECONDARY  — edited publication
 #   AGGREGATOR           — reposts and roundups
 #   UNKNOWN              — unresolved domain (LLM search results start here)
+#
+# audience_access — может ли читатель канала открыть ссылку без VPN:
+#   RU   — российский или заведомо доступный ресурс, ссылку в посте печатаем
+#   VPN  — иностранный ресурс, ссылку НЕ печатаем: источник указывается по
+#          имени, а весь смысл поста должен помещаться в сам пост
+# По умолчанию VPN: считать иностранный источник доступным — та самая ошибка,
+# из-за которой в канале появляются ссылки в никуда.
 version: 1
 
 defaults:
@@ -55,6 +62,82 @@ sources:
     enabled: false
     poll_interval_minutes: 180
     reason: Модели и прикладные гайды, но листинг смешан с форумными постами.
+
+
+  # ---------- Российские источники ----------
+  # MAX — российская сеть, и её аудитория читает по-русски. Эти фиды проверены
+  # 2026-09-06: отвечают 200 и парсятся. Ссылки на них печатаются в постах.
+  - key: habr-ai
+    name: Habr — искусственный интеллект
+    provider: RSS
+    url: https://habr.com/ru/rss/hubs/artificial_intelligence/articles/?fl=ru
+    trust: REPUTABLE_SECONDARY
+    audience_access: RU
+    poll_interval_minutes: 60
+    reason: "Профильный хаб на русском: практика внедрения, разборы, инструменты."
+
+  - key: habr-ml
+    name: Habr — машинное обучение
+    provider: RSS
+    url: https://habr.com/ru/rss/hubs/machine_learning/articles/?fl=ru
+    trust: REPUTABLE_SECONDARY
+    audience_access: RU
+    poll_interval_minutes: 60
+    reason: Технические разборы на русском, часто с воспроизводимыми примерами.
+
+  - key: yandex-habr
+    name: Блог Яндекса на Habr
+    provider: RSS
+    url: https://habr.com/ru/rss/companies/yandex/articles/?fl=ru
+    trust: OFFICIAL
+    audience_access: RU
+    poll_interval_minutes: 120
+    reason: Первоисточник по продуктам Яндекса — их аудитория совпадает с нашей.
+
+  - key: sber-habr
+    name: Блог Сбера на Habr
+    provider: RSS
+    url: https://habr.com/ru/rss/companies/sberbank/articles/?fl=ru
+    trust: OFFICIAL
+    audience_access: RU
+    poll_interval_minutes: 120
+    reason: Первоисточник по GigaChat и смежным сервисам.
+
+  - key: vk-habr
+    name: Блог VK на Habr
+    provider: RSS
+    url: https://habr.com/ru/rss/companies/vk/articles/?fl=ru
+    trust: OFFICIAL
+    audience_access: RU
+    poll_interval_minutes: 180
+    reason: Первоисточник по продуктам VK, включая инфраструктуру MAX.
+
+  - key: tproger
+    name: Tproger
+    provider: RSS
+    url: https://tproger.ru/feed/
+    trust: REPUTABLE_SECONDARY
+    audience_access: RU
+    poll_interval_minutes: 120
+    reason: Прикладные материалы и инструменты для разработчиков на русском.
+
+  - key: rb-ru
+    name: RB.RU
+    provider: RSS
+    url: https://rb.ru/feeds/all/
+    trust: REPUTABLE_SECONDARY
+    audience_access: RU
+    poll_interval_minutes: 120
+    reason: Российские новости технологий и бизнеса, включая внедрения ИИ.
+
+  - key: cnews
+    name: CNews
+    provider: RSS
+    url: https://www.cnews.ru/inc/rss/news.xml
+    trust: REPUTABLE_SECONDARY
+    audience_access: RU
+    poll_interval_minutes: 120
+    reason: "Российская ИТ-повестка: регулирование, рынок, внедрения."
 
   # ---------- RSS / Atom ----------
   - key: openai-announcements
