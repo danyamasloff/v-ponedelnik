@@ -65,8 +65,9 @@ class Settings(BaseSettings):
     # The research engine needs its own API key: a Claude subscription does not
     # provide one, and without it the LLM components simply become unavailable.
     anthropic_api_key: str | None = None
-    # Google's free tier needs no card and covers our volumes with room to
-    # spare. Preferred automatically when present, because it costs nothing.
+    # Google's free tier needs no card, but its quota is per model and small:
+    # measured on 2026-09-06, gemini-3.8-flash allows twenty requests a day.
+    # The client rotates through models to stretch that.
     gemini_api_key: str | None = None
     gemini_daily_request_limit: int = 1000
     gemini_requests_per_minute: int = 10
@@ -85,6 +86,13 @@ class Settings(BaseSettings):
     # free tier is the fallback, and without either the drafts stay skeletons.
     ollama_base_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "qwen2.5:7b-instruct"
+
+    # Any OpenAI-compatible endpoint: Qwen through Alibaba Model Studio,
+    # OpenRouter's ":free" models, or a self-hosted gateway. Used when Ollama
+    # is not running and before falling back to Gemini.
+    content_api_base_url: str | None = None
+    content_api_key: SecretStr | None = None
+    content_model: str | None = None
 
     # --- Posting schedule (PHASE 8) ---
     # Local times of the daily slots. Three a day is the cadence the channel

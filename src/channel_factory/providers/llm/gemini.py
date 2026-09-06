@@ -47,10 +47,34 @@ logger = get_logger(__name__)
 ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/interactions"
 REQUEST_TIMEOUT_SECONDS = 60.0
 
-# Google documents 1500 requests/day for Flash on the free tier. The default
-# here is deliberately lower: hitting a hard external quota mid-run is worse
-# than stopping early on our own terms.
+# Our own daily ceiling, kept well below anything Google enforces: hitting a
+# hard external quota mid-run is worse than stopping early on our own terms.
+#
+# Google's own free-tier limit is **per model and much smaller than it used to
+# be**. Measured on 2026-09-06 with a live key: gemini-3.8-flash answered
+#   quotaId=GenerateRequestsPerDayPerProjectPerModel-FreeTier, quotaValue=20
+# — twenty requests a day for that model, not the 1500 the older Flash models
+# had. Other models carry their own separate quota, which is why the client
+# falls back down MODEL_FALLBACKS instead of giving up on the first 429.
 DEFAULT_DAILY_REQUEST_LIMIT = 1000
+
+# Tried in order when a model's own daily free quota runs out. Each entry has
+# an independent quota, so a exhausted model costs us a retry, not the day.
+MODEL_FALLBACKS: tuple[str, ...] = (
+    "gemini-3.1-flash-lite",
+    "gemini-3-flash-preview",
+    "gemini-3.1-flash-lite-preview",
+)
+
+# How Google says "this model's free quota for today is gone". Two spellings,
+# because the two endpoints answer differently: /models:generateContent returns
+# a QuotaFailure detail with a quotaId, while /interactions returns only a
+# message naming the metric. Retrying the same model is then pointless; another
+# model, with its own quota, is the only way forward.
+DAILY_QUOTA_MARKERS = (
+    "GenerateRequestsPerDayPerProjectPerModel",
+    "generate_content_free_tier_requests",
+)
 
 # The free tier also caps requests per minute. Pacing ourselves is not
 # politeness: without it a scoring run fires hundreds of calls in seconds, gets
@@ -137,7 +161,9 @@ class GeminiClient:
             session.add(
                 AiGeneration(
                     provider="google",
-                    model=self._model,
+                    # The model that actually answered, which after a quota
+                    # fallback is not the configured one.
+                    model=usage.model if usage else self._model,
                     task_type=task,
                     status=status,
                     input_tokens=usage.input_tokens if usage else 0,
@@ -183,6 +209,12 @@ class GeminiClient:
 
         # 429 and 5xx are both transient here: the free tier throttles sooner
         # than documented, and a single hiccup must not cost us the cluster.
+        # Models still worth trying: the configured one first, then the
+        # fallbacks that have their own daily quota.
+        candidates = [self._model, *(m for m in MODEL_FALLBACKS if m != self._model)]
+        model = candidates.pop(0)
+        payload["model"] = model
+
         for attempt in range(MAX_RETRIES + 1):
             await self._pace()
             try:
@@ -195,6 +227,18 @@ class GeminiClient:
                 if response.status_code < 400:
                     break
                 last_error = f"HTTP {response.status_code}: {response.text[:300]}"
+                if response.status_code == 429 and any(
+                    marker in response.text for marker in DAILY_QUOTA_MARKERS
+                ):
+                    if not candidates:
+                        break
+                    model = candidates.pop(0)
+                    payload["model"] = model
+                    logger.warning(
+                        "gemini daily quota exhausted, switching model",
+                        extra={"model": model},
+                    )
+                    continue
                 if response.status_code != 429 and response.status_code < 500:
                     break
 
@@ -227,7 +271,7 @@ class GeminiClient:
         body = response.json()
         usage_raw = body.get("usage") or {}
         usage = LlmUsage(
-            model=self._model,
+            model=model,
             input_tokens=int(usage_raw.get("total_input_tokens", 0) or 0),
             output_tokens=int(usage_raw.get("total_output_tokens", 0) or 0),
             cost_usd=Decimal(0),

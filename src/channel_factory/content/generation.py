@@ -10,15 +10,22 @@ with this news. Retelling the source is both useless to the reader and the
 plagiarism the project forbids, so the prompt says so and the result is checked
 for it.
 
-Two backends, both free:
+Three backends, all free:
 
 * **Ollama** — a model running on this machine. Nothing leaves the computer and
   there is no quota at all.
-* **Gemini free tier** — no card, no cost, but the prompt does travel to Google.
-  Only public facts we already have are sent: title, vendor, product, version.
+* **Any OpenAI-compatible endpoint** — the shape Qwen (Alibaba Model Studio),
+  OpenRouter's ``:free`` models and most self-hosted gateways all speak. One
+  class covers them because the request body is identical; only the base URL,
+  the key and the model name change.
+* **Gemini free tier** — no card, no cost, but its free quota is per model and
+  small (measured: 20 requests a day for gemini-3.8-flash), so the client
+  rotates through models when one runs out.
 
-Neither is invented here: if no backend is available the draft simply stays a
-skeleton and says so, rather than being published half-written.
+Only public facts we already have are ever sent: title, vendor, product,
+version, source name. Nothing is invented here either: if no backend is
+available the draft stays a skeleton and says so, rather than being published
+half-written.
 """
 
 from __future__ import annotations
@@ -268,3 +275,78 @@ def _as_json(raw: str) -> dict[str, Any]:
     except (TypeError, ValueError):
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+class OpenAICompatibleGenerator:
+    """Any endpoint that speaks the OpenAI chat-completions shape.
+
+    Verified free options at the time of writing:
+
+    * **Qwen via Alibaba Model Studio** — about 1,000,000 tokens per model,
+      free for 90 days after activation, Singapore region only. Base URL is the
+      ``compatible-mode`` one from Alibaba's docs.
+    * **OpenRouter ``:free`` models** — 20 requests per minute and 50 per day
+      with a zero balance, no card. The roster of free models changes, so the
+      model id is configuration, not a constant.
+
+    JSON is requested through ``response_format``; endpoints that ignore it
+    still usually return JSON because the prompt asks for it, and a non-JSON
+    answer falls back to being treated as the analysis text.
+    """
+
+    name = "openai-compatible"
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        api_key: str,
+        model: str,
+        timeout: float = 120.0,
+    ) -> None:
+        self._base_url = base_url.rstrip("/")
+        self._api_key = api_key
+        self._model = model
+        self._timeout = timeout
+
+    async def analyse(self, brief: AnalysisBrief) -> GeneratedAnalysis:
+        payload = {
+            "model": self._model,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": brief.as_prompt()},
+            ],
+            "temperature": 0.4,
+            "max_tokens": 700,
+            "response_format": {"type": "json_object"},
+        }
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+        try:
+            async with httpx.AsyncClient(timeout=self._timeout) as client:
+                response = await client.post(
+                    f"{self._base_url}/chat/completions", headers=headers, json=payload
+                )
+        except httpx.HTTPError as exc:
+            raise GenerationError(
+                f"{self._model} unreachable: {type(exc).__name__}: {exc}"
+            ) from exc
+        if response.status_code >= 400:
+            raise GenerationError(
+                f"{self._model} HTTP {response.status_code}: {response.text[:200]}"
+            )
+
+        try:
+            content = response.json()["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError, ValueError) as exc:
+            raise GenerationError(f"unexpected answer shape: {response.text[:200]}") from exc
+
+        data = _as_json(str(content))
+        return GeneratedAnalysis(
+            text=clean_analysis(str(data.get("analysis") or content), brief),
+            backend=self.name,
+            model=self._model,
+            headline=clean_headline(str(data.get("headline") or "")),
+        )
