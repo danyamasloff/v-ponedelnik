@@ -39,8 +39,10 @@ def downgrade() -> None:
         "('EXTRACTION', 'CLASSIFICATION', 'SCORING', 'DEDUP_ADJUDICATION', "
         "'SEARCH', 'SYNTHESIS')"
     )
+    # Колонка называется task_type, а не task: ошибка в этой строке не
+    # проявлялась при обычном upgrade и всплыла только на downgrade base.
     op.execute(
-        "ALTER TABLE ai_generations ALTER COLUMN task TYPE ai_task_type "
-        "USING task::text::ai_task_type"
+        "ALTER TABLE ai_generations ALTER COLUMN task_type TYPE ai_task_type "
+        "USING task_type::text::ai_task_type"
     )
     op.execute("DROP TYPE ai_task_type_old")

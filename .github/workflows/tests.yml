@@ -26,3 +26,41 @@ jobs:
       # реального PostgreSQL, как описано в README.
       - run: uv run python -m ruff check .
       - run: uv run python -m pytest tests/unit -q
+
+  # Отдельная задача: миграции ломаются иначе, чем код. Ошибка в файле
+  # миграции не видна ни ruff, ни тестам — она всплывает только на чистой
+  # базе, то есть у того, кто разворачивает проект впервые. Ровно так и
+  # случилось при переезде на Neon.
+  migrations:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql+asyncpg://ci:ci@localhost:5432/ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --frozen
+
+      - name: Накатить с нуля
+        run: uv run python -m alembic upgrade head
+
+      # Требование проекта: схема должна откатываться. Проверяется здесь, а
+      # не на словах — откат ломается тише всего.
+      - name: Откатить до пустой базы
+        run: uv run python -m alembic downgrade base
+
+      - name: Накатить снова
+        run: uv run python -m alembic upgrade head

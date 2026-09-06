@@ -29,18 +29,8 @@ ENUMS = {
 
 
 
-# Shared enum objects created with checkfirst: 'platform' already exists,
-# and autogenerate would otherwise try to create it again.
-ENUMS = {
-}
-
-
 def upgrade() -> None:
     """Upgrade schema."""
-    bind = op.get_bind()
-    for enum_type in ENUMS.values():
-        enum_type.create(bind, checkfirst=True)
-
     bind = op.get_bind()
     for enum_type in ENUMS.values():
         enum_type.create(bind, checkfirst=True)
@@ -77,13 +67,6 @@ def downgrade() -> None:
     op.drop_index('ix_publications_cluster', table_name='publications')
     op.drop_table('publications')
     # ### end Alembic commands ###
-
-    # Drop only the types this migration introduced; 'platform' is still
-    # used by market_channels and niche_score_runs.
-    bind = op.get_bind()
-    for name in ('publish_mode', 'publication_status'):
-        ENUMS[name].drop(bind, checkfirst=True)
-
 
     # Drop only the types this migration introduced; 'platform' is still
     # used by market_channels and niche_score_runs.
