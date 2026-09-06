@@ -18,6 +18,15 @@ from decimal import Decimal
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from channel_factory.core.enums import Platform
+
+# Platform scoping. A single brand is launched on Telegram and MAX at once, so
+# every aggregate must be answerable for one platform as well as for both, and
+# NULL means "both". Compared as text to keep the enum out of the parameter.
+_PLATFORM_FILTER = (
+    "(CAST(:platform AS text) IS NULL OR mc.platform::text = CAST(:platform AS text))"
+)
+
 # The most recent snapshot per channel, optionally as of a chosen date. This is
 # the "current state of the market" the analytics work from.
 _LATEST_SNAPSHOT_CTE = """
@@ -52,7 +61,7 @@ WITH {_LATEST_SNAPSHOT_CTE},
             END AS views_to_subscribers
         FROM latest l
         JOIN market_channels mc ON mc.id = l.market_channel_id
-        WHERE mc.niche_id IS NOT NULL
+        WHERE mc.niche_id IS NOT NULL AND {_PLATFORM_FILTER}
     )
 SELECT
     n.id                AS niche_id,
@@ -95,7 +104,9 @@ WITH {_LATEST_SNAPSHOT_CTE},
             ) AS position
         FROM latest l
         JOIN market_channels mc ON mc.id = l.market_channel_id
-        WHERE mc.niche_id IS NOT NULL AND l.subscribers IS NOT NULL
+        WHERE mc.niche_id IS NOT NULL
+          AND l.subscribers IS NOT NULL
+          AND {_PLATFORM_FILTER}
     )
 SELECT
     niche_id,
@@ -148,26 +159,39 @@ SELECT
 FROM first_value fv
 JOIN last_value lv ON lv.market_channel_id = fv.market_channel_id
 JOIN market_channels mc ON mc.id = fv.market_channel_id
-WHERE mc.niche_id IS NOT NULL AND fv.subscribers > 0
+WHERE mc.niche_id IS NOT NULL
+  AND fv.subscribers > 0
+  AND (CAST(:platform AS text) IS NULL OR mc.platform::text = CAST(:platform AS text))
 GROUP BY mc.niche_id
 """
 
-_DATASET_SQL = """
+_DATASET_SQL = f"""
+WITH scoped AS (
+    SELECT mc.id, mc.niche_id
+    FROM market_channels mc
+    WHERE {_PLATFORM_FILTER}
+),
+scoped_snapshots AS (
+    SELECT ms.*
+    FROM market_snapshots ms
+    JOIN scoped s ON s.id = ms.market_channel_id
+)
 SELECT
-    (SELECT count(*) FROM market_channels)                              AS channels,
-    (SELECT count(*) FROM market_channels WHERE niche_id IS NULL)       AS channels_without_niche,
-    (SELECT count(*) FROM market_snapshots)                             AS snapshots,
-    (SELECT count(DISTINCT snapshot_date) FROM market_snapshots)        AS snapshot_dates,
-    (SELECT min(snapshot_date) FROM market_snapshots)                   AS first_date,
-    (SELECT max(snapshot_date) FROM market_snapshots)                   AS last_date,
-    (SELECT count(*) FROM niches)                                       AS niches,
+    (SELECT count(*) FROM scoped)                                   AS channels,
+    (SELECT count(*) FROM scoped WHERE niche_id IS NULL)             AS channels_without_niche,
+    (SELECT count(*) FROM scoped_snapshots)                          AS snapshots,
+    (SELECT count(DISTINCT snapshot_date) FROM scoped_snapshots)     AS snapshot_dates,
+    (SELECT min(snapshot_date) FROM scoped_snapshots)                AS first_date,
+    (SELECT max(snapshot_date) FROM scoped_snapshots)                AS last_date,
+    (SELECT count(DISTINCT niche_id) FROM scoped WHERE niche_id IS NOT NULL) AS niches,
     (SELECT count(*) FROM direct_imports WHERE status IN ('SUCCESS', 'PARTIAL')) AS imports
 """
 
-_PLATFORM_SQL = """
-SELECT platform, count(*) AS channels
-FROM market_channels
-GROUP BY platform
+_PLATFORM_SQL = f"""
+SELECT mc.platform, count(*) AS channels
+FROM market_channels mc
+WHERE {_PLATFORM_FILTER}
+GROUP BY mc.platform
 ORDER BY channels DESC
 """
 
@@ -237,15 +261,24 @@ class MarketStatisticsRepository:
         self._session = session
 
     async def niche_metrics(
-        self, *, as_of: date | None = None, top_n: int = 3
+        self,
+        *,
+        as_of: date | None = None,
+        top_n: int = 3,
+        platform: Platform | None = None,
     ) -> list[NicheMetrics]:
-        """Aggregate the latest snapshot of every channel, grouped by niche."""
-        rows = (await self._session.execute(text(_METRICS_SQL), {"as_of": as_of})).mappings().all()
+        """Aggregate the latest snapshot of every channel, grouped by niche.
+
+        ``platform`` restricts the aggregation to one messenger; ``None`` covers
+        all of them.
+        """
+        params = {"as_of": as_of, "platform": platform.value if platform else None}
+        rows = (await self._session.execute(text(_METRICS_SQL), params)).mappings().all()
         concentration = {
             row["niche_id"]: row["top_share"]
             for row in (
                 await self._session.execute(
-                    text(_CONCENTRATION_SQL), {"as_of": as_of, "top_n": top_n}
+                    text(_CONCENTRATION_SQL), {**params, "top_n": top_n}
                 )
             )
             .mappings()
@@ -253,7 +286,7 @@ class MarketStatisticsRepository:
         }
         growth = {
             row["niche_id"]: (row["median_growth_rate"], row["channels_with_history"])
-            for row in (await self._session.execute(text(_GROWTH_SQL), {"as_of": as_of}))
+            for row in (await self._session.execute(text(_GROWTH_SQL), params))
             .mappings()
             .all()
         }
@@ -284,12 +317,13 @@ class MarketStatisticsRepository:
             )
         return metrics
 
-    async def dataset_summary(self) -> DatasetSummary:
+    async def dataset_summary(self, *, platform: Platform | None = None) -> DatasetSummary:
         """High-level description of the data the analysis is based on."""
-        row = (await self._session.execute(text(_DATASET_SQL))).mappings().one()
+        params = {"platform": platform.value if platform else None}
+        row = (await self._session.execute(text(_DATASET_SQL), params)).mappings().one()
         platforms = {
             str(item["platform"]): item["channels"]
-            for item in (await self._session.execute(text(_PLATFORM_SQL))).mappings().all()
+            for item in (await self._session.execute(text(_PLATFORM_SQL), params)).mappings().all()
         }
         sources = tuple(
             item["name"]

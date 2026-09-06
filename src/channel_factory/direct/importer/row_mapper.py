@@ -40,6 +40,13 @@ _NON_NEGATIVE_FIELDS = ("subscribers", "predicted_views", "cpv", "campaign_price
 _ERR_WARNING_THRESHOLD = Decimal(5)
 
 
+def _scaled(value: Decimal | None, scale: int) -> Decimal | None:
+    """Apply a column-level unit multiplier declared by the source header."""
+    if value is None or scale == 1:
+        return value
+    return value * scale
+
+
 def jsonable(value: Any) -> Any:
     """Convert a spreadsheet value into something JSONB can store losslessly."""
     if value is None or isinstance(value, bool | int | float | str):
@@ -137,11 +144,26 @@ def normalize_row(
     row.category = clean_text(cell("category"))
     row.region = clean_text(cell("region"))
 
-    row.subscribers = parse("subscribers", parse_int)
-    row.predicted_views = parse("predicted_views", parse_int)
-    row.cpv = parse("cpv", lambda value: parse_decimal(value, prefer_thousands_group=False))
+    # Units declared by the source header (see config/direct_columns.yaml):
+    # "Просмотры, тыс" scales by 1000, "ERR, %" states percent points.
+    subscribers_spec = mapped.spec("subscribers")
+    views_spec = mapped.spec("predicted_views")
+    cpv_spec = mapped.spec("cpv")
+    err_spec = mapped.spec("err")
+    price_spec = mapped.spec("campaign_price")
 
-    err_result = parse("err", parse_percent)
+    row.subscribers = parse(
+        "subscribers", lambda value: parse_int(value, scale=subscribers_spec.scale)
+    )
+    row.predicted_views = parse(
+        "predicted_views", lambda value: parse_int(value, scale=views_spec.scale)
+    )
+    row.cpv = parse("cpv", lambda value: _scaled(parse_decimal(value), cpv_spec.scale))
+
+    err_result = parse(
+        "err",
+        lambda value: parse_percent(value, declared_percent_points=err_spec.percent_points),
+    )
     if err_result is not None:
         row.err, err_warning = err_result
         if err_warning:
@@ -151,8 +173,14 @@ def normalize_row(
 
     money_result = parse("campaign_price", parse_money)
     if money_result is not None:
-        row.campaign_price, detected_currency = money_result
-        row.currency = clean_text(cell("currency")) or detected_currency
+        amount, detected_currency = money_result
+        row.campaign_price = _scaled(amount, price_spec.scale)
+        row.currency = (
+            clean_text(cell("currency"))
+            or detected_currency
+            or price_spec.currency
+            or cpv_spec.currency
+        )
 
     parsed_date = parse("snapshot_date", parse_date)
     if parsed_date is None:

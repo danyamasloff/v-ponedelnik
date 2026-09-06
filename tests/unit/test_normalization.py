@@ -59,6 +59,41 @@ class TestParseInt:
         with pytest.raises(ValueParseError):
             parse_int(raw)
 
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("2К", 2_000),  # Cyrillic К, as used by Yandex Direct exports
+            ("9999К", 9_999_000),
+            ("2K", 2_000),  # Latin K
+            ("1.5К", 1_500),
+            ("3 тыс", 3_000),
+            ("2М", 2_000_000),
+            ("2M", 2_000_000),
+            ("1,2 млн", 1_200_000),
+            ("979", 979),  # sub-thousand values come through unsuffixed
+        ],
+    )
+    def test_parses_magnitude_suffixes(self, raw: str, expected: int) -> None:
+        assert parse_int(raw) == expected
+
+    def test_bare_suffix_is_not_a_number(self) -> None:
+        with pytest.raises(ValueParseError):
+            parse_int("К")
+
+    @pytest.mark.parametrize(
+        ("raw", "scale", "expected"),
+        [
+            ("0.1", 1000, 100),  # "Просмотры, тыс"
+            ("26.3", 1000, 26_300),
+            ("999.9", 1000, 999_900),
+            ("5", 1, 5),
+        ],
+    )
+    def test_column_scale_is_applied_before_the_integer_check(
+        self, raw: str, scale: int, expected: int
+    ) -> None:
+        assert parse_int(raw, scale=scale) == expected
+
 
 class TestParsePercent:
     @pytest.mark.parametrize(
@@ -82,6 +117,28 @@ class TestParsePercent:
 
     def test_blank(self) -> None:
         assert parse_percent("") == (None, None)
+
+    def test_declared_percent_points_removes_the_warning(self) -> None:
+        """The header "ERR, %" states the unit, so there is nothing to warn about."""
+        value, warning = parse_percent("7", declared_percent_points=True)
+        assert value == Decimal("0.07")
+        assert warning is None
+
+    def test_declared_percent_points_wins_at_the_boundary_value_one(self) -> None:
+        """In a column of integer percentages, "1" means 1%, never 100%."""
+        value, warning = parse_percent("1", declared_percent_points=True)
+        assert value == Decimal("0.01")
+        assert warning is None
+
+    def test_declared_percent_points_reports_a_value_below_one(self) -> None:
+        value, warning = parse_percent("0.07", declared_percent_points=True)
+        assert value == Decimal("0.0007")
+        assert warning is not None and "below 1" in warning
+
+    def test_explicit_percent_sign_still_wins(self) -> None:
+        value, warning = parse_percent("0,5%", declared_percent_points=True)
+        assert value == Decimal("0.005")
+        assert warning is None
 
 
 class TestParseMoney:
@@ -166,7 +223,12 @@ class TestHeadersAndSlugs:
         ("raw", "expected"),
         [
             ("Подписчики, чел.", "подписчики чел"),
-            ("ERR %", "err"),
+            # "%" is kept: it is the column's unit, not punctuation noise.
+            ("ERR %", "err %"),
+            ("ERR, %", "err %"),
+            ("ERR", "err"),
+            ("Просмотры, тыс", "просмотры тыс"),
+            ("CPV, RUB", "cpv rub"),
             ("  Название   канала ", "название канала"),
             ("Вовлечённость", "вовлеченность"),
         ],

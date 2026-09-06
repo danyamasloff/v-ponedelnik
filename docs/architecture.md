@@ -23,10 +23,11 @@ Modular monolith: один Python-пакет, разбитый на слабо �
 | `direct` | Импорт выгрузок: `mapping` → `normalization` → `importer` |
 | `market` | Агрегаты по нишам, считаются в PostgreSQL |
 | `niches` | Конфигурация, Niche Score, оркестрация анализа, отчёты |
+| `competitors` | Бенчмарки ниши, лидеры, watchlist, досье |
 | `cli` | Команды Typer |
 
-Планируемые (пока не созданы): `competitors`, `content`, `providers`,
-`publishers`, `analytics`, `monetization`.
+Планируемые (пока не созданы): `content`, `providers`, `publishers`,
+`analytics`, `monetization`.
 
 ## Sync vs async
 
@@ -59,8 +60,9 @@ erDiagram
 | `direct_import_rows` | Строка файла в сыром и нормализованном виде + ошибки/предупреждения |
 | `market_channels` | Идентичность канала на рынке (не наш канал) |
 | `market_snapshots` | Метрики канала на дату — только добавление, без обновлений |
-| `niche_score_runs` | Один запуск скоринга: датасет, веса, пороги |
+| `niche_score_runs` | Один запуск скоринга: датасет, веса, пороги, охват платформы |
 | `niche_scores` | Оценка ниши в прогоне: score, ранг, разбивка по компонентам |
+| `competitor_watchlist` | Намерение отслеживать канал как конкурента (без своих снимков) |
 
 Решения по схеме:
 
@@ -86,10 +88,18 @@ Niche Score v1 — взвешенное среднее компонентов, �
 отчёта обязан соответствовать тому, что лежит в базе, даже если после расчёта
 импортировали новые данные.
 
+## Анализ конкурентов (PHASE 3)
+
+Конкурент — это обычный `market_channels`, его история уже в
+`market_snapshots`, поэтому отдельных снимков для конкурентов нет: watchlist
+добавляет только намерение и заметку. Позиции считаются внутри ниши **и
+платформы**. Границы источника и методологические решения — в
+[competitor-analysis.md](competitor-analysis.md).
+
 ## Отложено осознанно
 
 Эти сущности спроектированы (см. discovery), но **не создаются заранее** —
-каждая появится в своей фазе: `competitor_watchlist` (PHASE 3),
+каждая появится в своей фазе:
 `channels` / `channel_accounts` (PHASE 4), `content_*` (PHASE 5),
 `assets` (PHASE 6), `publications` и метрики (PHASE 8–11),
 `experiments` (PHASE 12), `monetization_*` (PHASE 13),

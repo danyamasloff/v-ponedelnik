@@ -8,9 +8,11 @@ from pathlib import Path
 import pytest
 from sqlalchemy import func, select
 
+from channel_factory.core.enums import Platform
 from channel_factory.db.models import NicheScore, NicheScoreRun
 from channel_factory.db.repositories.niches import NicheScoreRepository
 from channel_factory.direct.importer.pipeline import DirectImportService
+from channel_factory.niches.cross_platform import compare_platforms
 from channel_factory.niches.reports import (
     MARKET_OVERVIEW_FILE,
     NICHE_RANKING_CSV,
@@ -259,6 +261,160 @@ class TestComponentAvailability:
         assert "finansy" in skipped
         assert all(r.insufficient_data for r in outcome.skipped)
         assert len(outcome.scored) == 2
+
+
+MIXED_HEADERS = HEADERS
+# The same three niches on both platforms, so a per-platform ranking is possible.
+MIXED_CHANNELS = [
+    ("TG AI 1", "https://t.me/tgai1", AI, 10_000, "25,0%", 3_000, "1,50", 20_000),
+    ("TG AI 2", "https://t.me/tgai2", AI, 20_000, "22,0%", 5_000, "1,40", 30_000),
+    ("TG AI 3", "https://t.me/tgai3", AI, 30_000, "20,0%", 7_000, "1,30", 40_000),
+    ("TG Career 1", "https://t.me/tgc1", CAREER, 5_000, "12,0%", 900, "0,60", 6_000),
+    ("TG Career 2", "https://t.me/tgc2", CAREER, 6_000, "11,0%", 1_000, "0,55", 7_000),
+    ("TG Career 3", "https://t.me/tgc3", CAREER, 7_000, "10,0%", 1_100, "0,50", 8_000),
+    ("MAX AI 1", "https://max.ru/mxai1", AI, 4_000, "9,0%", 400, "0,40", 4_000),
+    ("MAX AI 2", "https://max.ru/mxai2", AI, 5_000, "8,0%", 500, "0,35", 5_000),
+    ("MAX AI 3", "https://max.ru/mxai3", AI, 6_000, "7,0%", 600, "0,30", 6_000),
+    ("MAX Career 1", "https://max.ru/mxc1", CAREER, 9_000, "24,0%", 2_500, "1,60", 25_000),
+    ("MAX Career 2", "https://max.ru/mxc2", CAREER, 11_000, "26,0%", 3_000, "1,70", 28_000),
+    ("MAX Career 3", "https://max.ru/mxc3", CAREER, 13_000, "28,0%", 3_500, "1,80", 31_000),
+]
+
+
+def mixed_rows(snapshot_date: str = "2026-09-01") -> list[list[object]]:
+    return [
+        [name, url, category, str(subs), err, str(views), cpv, str(price), snapshot_date]
+        for name, url, category, subs, err, views, cpv, price in MIXED_CHANNELS
+    ]
+
+
+class TestPlatformScoping:
+    async def test_platform_run_only_covers_that_platform(
+        self, database, column_mapping, niche_score_config, xlsx_factory
+    ) -> None:
+        service = DirectImportService(database, column_mapping)
+        await service.import_file(xlsx_factory(MIXED_HEADERS, mixed_rows(), name="mixed.xlsx"))
+
+        analysis = NicheAnalysisService(database, niche_score_config)
+        telegram = await analysis.analyze(platform=Platform.TELEGRAM)
+        maximum = await analysis.analyze(platform=Platform.MAX)
+
+        assert telegram.dataset.channels == 6
+        assert maximum.dataset.channels == 6
+        assert telegram.platform is Platform.TELEGRAM
+        assert {r.metrics.channels_count for r in telegram.scored} == {3}
+
+    async def test_percentiles_are_computed_inside_the_platform(
+        self, database, column_mapping, niche_score_config, xlsx_factory
+    ) -> None:
+        """AI leads on Telegram while Career leads on MAX, by construction."""
+        service = DirectImportService(database, column_mapping)
+        await service.import_file(xlsx_factory(MIXED_HEADERS, mixed_rows(), name="mixed.xlsx"))
+
+        analysis = NicheAnalysisService(database, niche_score_config)
+        telegram = await analysis.analyze(platform=Platform.TELEGRAM)
+        maximum = await analysis.analyze(platform=Platform.MAX)
+
+        assert telegram.scored[0].slug == "ai-i-tehnologii"
+        assert maximum.scored[0].slug == "karera"
+
+    async def test_runs_are_stored_and_fetched_per_scope(
+        self, database, column_mapping, niche_score_config, xlsx_factory
+    ) -> None:
+        service = DirectImportService(database, column_mapping)
+        await service.import_file(xlsx_factory(MIXED_HEADERS, mixed_rows(), name="mixed.xlsx"))
+
+        analysis = NicheAnalysisService(database, niche_score_config)
+        await analysis.analyze()
+        await analysis.analyze(platform=Platform.TELEGRAM)
+        await analysis.analyze(platform=Platform.MAX)
+
+        async with database.session() as session:
+            repo = NicheScoreRepository(session)
+            overall = await repo.latest_run()
+            telegram = await repo.latest_run(platform=Platform.TELEGRAM)
+            maximum = await repo.latest_run(platform=Platform.MAX)
+
+        assert overall is not None and overall.platform is None
+        assert telegram is not None and telegram.platform is Platform.TELEGRAM
+        assert maximum is not None and maximum.platform is Platform.MAX
+        assert overall.dataset["channels"] == 12
+        assert telegram.dataset["channels"] == 6
+
+    async def test_platform_reports_do_not_overwrite_the_overall_ones(
+        self, database, column_mapping, niche_score_config, xlsx_factory, tmp_path: Path
+    ) -> None:
+        service = DirectImportService(database, column_mapping)
+        await service.import_file(xlsx_factory(MIXED_HEADERS, mixed_rows(), name="mixed.xlsx"))
+
+        analysis = NicheAnalysisService(database, niche_score_config)
+        await analysis.analyze()
+        await analysis.analyze(platform=Platform.TELEGRAM)
+
+        written: list[str] = []
+        async with database.session() as session:
+            repo = NicheScoreRepository(session)
+            for platform in (None, Platform.TELEGRAM):
+                run = await repo.latest_run(platform=platform)
+                rows = build_rows(await repo.scores_for_run(run.id))
+                written += [path.name for path in write_reports(tmp_path, run, rows)]
+
+        assert NICHE_RANKING_FILE in written
+        assert "niche-ranking-telegram.md" in written
+        assert "market-overview-telegram.md" in written
+
+
+class TestCrossPlatform:
+    async def test_ranks_by_the_weaker_platform(
+        self, database, column_mapping, niche_score_config, xlsx_factory
+    ) -> None:
+        service = DirectImportService(database, column_mapping)
+        await service.import_file(xlsx_factory(MIXED_HEADERS, mixed_rows(), name="mixed.xlsx"))
+
+        analysis = NicheAnalysisService(database, niche_score_config)
+        telegram = await analysis.analyze(platform=Platform.TELEGRAM)
+        maximum = await analysis.analyze(platform=Platform.MAX)
+
+        async with database.session() as session:
+            repo = NicheScoreRepository(session)
+            telegram_rows = build_rows(await repo.scores_for_run(telegram.run_id))
+            max_rows = build_rows(await repo.scores_for_run(maximum.run_id))
+
+        compared = compare_platforms(telegram_rows, max_rows)
+
+        assert all(niche.on_both for niche in compared)
+        for niche in compared:
+            assert niche.weakest_score == min(niche.score_telegram, niche.score_max)
+        scores = [niche.weakest_score for niche in compared]
+        assert scores == sorted(scores, reverse=True), "strongest weakest-link first"
+
+    async def test_niche_present_on_one_platform_only_is_separated(
+        self, database, column_mapping, niche_score_config, xlsx_factory
+    ) -> None:
+        rows = mixed_rows()
+        rows += [
+            [f"TG Only {i}", f"https://t.me/tgonly{i}", "Финансы", "8000", "9,0%", "800",
+             "0,70", "9000", "2026-09-01"]
+            for i in range(3)
+        ]
+        service = DirectImportService(database, column_mapping)
+        await service.import_file(xlsx_factory(MIXED_HEADERS, rows, name="mixed.xlsx"))
+
+        analysis = NicheAnalysisService(database, niche_score_config)
+        telegram = await analysis.analyze(platform=Platform.TELEGRAM)
+        maximum = await analysis.analyze(platform=Platform.MAX)
+
+        async with database.session() as session:
+            repo = NicheScoreRepository(session)
+            telegram_rows = build_rows(await repo.scores_for_run(telegram.run_id))
+            max_rows = build_rows(await repo.scores_for_run(maximum.run_id))
+
+        compared = compare_platforms(telegram_rows, max_rows)
+        single = [niche for niche in compared if not niche.on_both]
+
+        assert [niche.slug for niche in single] == ["finansy"]
+        assert single[0].score_max is None
+        assert single[0].weakest_score is None, "no dual-platform score without both platforms"
 
 
 class TestReports:

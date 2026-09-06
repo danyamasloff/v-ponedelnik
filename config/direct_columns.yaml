@@ -1,8 +1,22 @@
 # Column mapping for market-data exports (Yandex Direct / channel catalogs).
 #
 # Aliases are matched after normalization: lowercase, "ё" -> "е", punctuation
-# stripped, whitespace collapsed. So "Подписчики, чел." matches "подписчики чел".
-# Adding a new export format should only ever mean adding aliases here.
+# stripped, whitespace collapsed. "%" is NOT stripped, because it carries the
+# column's unit ("ERR, %" must stay distinguishable from a bare "ERR").
+#
+# An alias can be either a plain string, or a mapping that declares the unit the
+# column is written in:
+#
+#   - header: "Просмотры, тыс"     source header
+#     scale: 1000                  multiply values by this
+#     percent_points: true         values are percent points, not fractions
+#     currency: RUB                currency of a monetary column
+#
+# Units belong to the column, not to individual values, which is why they are
+# declared here instead of being guessed per row.
+#
+# Verified against the real export data/raw/direct/yandex_direct_all_2026-09-02.xlsx
+# (11 109 channels, header on row 7, summary block above it).
 version: 1
 
 # Import fails with a clear error if any of these cannot be found in the file.
@@ -12,7 +26,7 @@ required:
 fields:
   channel_name:
     - "Канал"
-    - "Название канала"
+    - "Название канала"      # real Yandex Direct export
     - "Имя канала"
     - "Площадка"
     - "Channel"
@@ -21,7 +35,7 @@ fields:
 
   channel_url:
     - "Ссылка"
-    - "Ссылка на канал"
+    - "Ссылка на канал"      # real Yandex Direct export
     - "Адрес"
     - "URL"
     - "Link"
@@ -36,12 +50,13 @@ fields:
 
   platform:
     - "Платформа"
-    - "Мессенджер"
+    - "Мессенджер"           # real Yandex Direct export ("Telegram" / "МАКС")
     - "Platform"
     - "Messenger"
 
   category:
     - "Категория"
+    - "Категория канала"     # real Yandex Direct export
     - "Тематика"
     - "Рубрика"
     - "Ниша"
@@ -51,7 +66,7 @@ fields:
 
   subscribers:
     - "Подписчики"
-    - "Количество подписчиков"
+    - "Количество подписчиков"  # real Yandex Direct export (values like "2К")
     - "Подписчиков"
     - "Аудитория"
     - "Subscribers"
@@ -59,7 +74,10 @@ fields:
 
   err:
     - "ERR"
-    - "ERR %"
+    - header: "ERR, %"       # real Yandex Direct export: integers like "7" = 7%
+      percent_points: true
+    - header: "ERR %"
+      percent_points: true
     - "Вовлеченность"
     - "Вовлечённость"
     - "Engagement rate"
@@ -67,6 +85,9 @@ fields:
   predicted_views:
     - "Прогноз просмотров"
     - "Просмотры"
+    - header: "Просмотры, тыс"  # real Yandex Direct export: "0.1" = 100 views
+      scale: 1000
+      note: "источник публикует просмотры в тысячах"
     - "Охват"
     - "Predicted views"
     - "Views"
@@ -74,12 +95,16 @@ fields:
 
   cpv:
     - "CPV"
+    - header: "CPV, RUB"     # real Yandex Direct export
+      currency: RUB
     - "Цена за просмотр"
     - "Стоимость просмотра"
     - "Cost per view"
 
   campaign_price:
     - "Стоимость размещения"
+    - header: "Прогноз цены, RUB"  # real Yandex Direct export
+      currency: RUB
     - "Стоимость"
     - "Цена"
     - "Бюджет"

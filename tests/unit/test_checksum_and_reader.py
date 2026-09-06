@@ -54,6 +54,25 @@ class TestReadTable:
         assert table.header_row_number == 3
         assert [row.number for row in table.rows] == [4, 5]
 
+    def test_skips_a_summary_block_of_label_value_pairs(self, xlsx_factory) -> None:
+        """Real Yandex Direct exports open with a summary block before the table.
+
+        Those rows have two non-empty cells each, so "first row with two cells"
+        would pick the summary instead of the header.
+        """
+        summary = [
+            ["Период публикации объявлений", "2026-09-02 - 2026-09-05"],
+            ["Количество выбранных каналов", "11109"],
+            ["Средний CPV, RUB", "0.92"],
+            [],
+        ]
+        path = xlsx_factory(HEADERS, ROWS, title_rows=summary)
+        table = read_table(path)
+
+        assert table.headers == HEADERS
+        assert table.header_row_number == 5
+        assert [row.values[0] for row in table.rows] == ["AI Tools", "Neuro News"]
+
     def test_skips_fully_empty_rows(self, xlsx_factory) -> None:
         path = xlsx_factory(HEADERS, [ROWS[0], [None, None, None], ROWS[1]])
         table = read_table(path)

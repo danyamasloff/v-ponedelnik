@@ -1,0 +1,53 @@
+# Topic Score v1 — configuration.
+#
+# Same mechanics as Niche Score: every component is scaled to 0-100 and
+# oriented "higher is better", the score is a plain weighted average, and a
+# component that cannot be computed is dropped with the remaining weights
+# renormalized. Nothing is invented to fill a gap.
+#
+# Thresholds decide a cluster's fate, and none of them is final:
+#   score >= 70  -> SELECTED   (publishing candidate)
+#   45 <= score  -> BACKLOG    (queue / digest, re-scored when evidence grows)
+#   score < 45   -> FILTERED   (parked, still re-scorable)
+# REJECTED is never the result of a low score — only of an explicit reason
+# (irrelevant, spam, unsafe, confirmed junk, manual exclusion).
+version: 1
+score_version: topic_score_v1
+
+thresholds:
+  selected: 70
+  backlog: 45
+
+weights:
+  relevance: 0.22          # LLM: is this about practical AI / digital skills
+  practical_value: 0.20    # LLM: can the reader DO something with it
+  novelty: 0.15            # deterministic: unlike what we already covered
+  authority: 0.13          # deterministic: from the source trust level
+  timeliness: 0.12         # deterministic: decay from the event date
+  audience_fit: 0.10       # LLM now, learned from our own metrics in PHASE 9
+  content_potential: 0.08  # LLM: is there enough here for a real post
+
+# Half-life in hours for the timeliness component, per event type. A release is
+# stale in two days; a guide stays useful for weeks.
+timeliness_half_life_hours:
+  RELEASE: 48
+  UPDATE: 72
+  INCIDENT: 24
+  NEW_TOOL: 168
+  RESEARCH: 336
+  GUIDE: 336
+  OTHER: 120
+
+novelty:
+  # A cluster loses novelty as it ages and as we accumulate similar published
+  # material. Distance is measured with SimHash against our own archive.
+  similar_simhash_distance: 12
+  age_penalty_per_day: 8
+
+# Clusters older than this are moved to EXPIRED by the scoring job: they are
+# not rejected, just no longer publishing candidates.
+expire_after_days: 30
+
+# Below this many scored clusters the ranking is reported as low-confidence,
+# exactly as in the niche ranking.
+low_confidence_cluster_count: 5

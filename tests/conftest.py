@@ -27,6 +27,14 @@ from channel_factory.direct.mapping.loader import load_column_mapping
 from channel_factory.niches.config import load_niche_score_config
 
 TRUNCATED_TABLES = (
+    "topic_scores",
+    "research_cluster_items",
+    "research_clusters",
+    "research_items",
+    "research_sources",
+    "ai_generations",
+    "pipeline_runs",
+    "competitor_watchlist",
     "direct_import_rows",
     "market_snapshots",
     "niche_scores",

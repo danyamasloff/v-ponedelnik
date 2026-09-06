@@ -73,6 +73,18 @@ _TRANSLIT = {
     "ь": "", "э": "e", "ю": "yu", "я": "ya",
 }
 
+# Magnitude suffixes used by Yandex Direct exports: "2К" means 2000 subscribers.
+# Both Cyrillic and Latin letters are listed because they are visually identical
+# and sources mix them. Longest first so "тыс" wins over a bare "т".
+_MAGNITUDE_SUFFIXES: tuple[tuple[str, int], ...] = (
+    ("МЛН", 1_000_000),
+    ("ТЫС", 1_000),
+    ("К", 1_000),  # Cyrillic К
+    ("K", 1_000),  # Latin K
+    ("М", 1_000_000),  # Cyrillic М
+    ("M", 1_000_000),  # Latin M
+)
+
 _DATE_FORMATS = (
     "%Y-%m-%d",
     "%d.%m.%Y",
@@ -106,7 +118,10 @@ def normalize_header(value: object) -> str:
     """
     text = clean_text(value) or ""
     text = text.lower().replace("ё", "е")
-    text = re.sub(r"[.,;:()\[\]{}%\"'`«»№/\\|+*]", " ", text)
+    # "%" is deliberately kept: it carries the column's unit, exactly like the
+    # currency in "CPV, RUB" does, and "ERR, %" must stay distinguishable from
+    # a bare "ERR" whose unit is unknown.
+    text = re.sub(r"[.,;:()\[\]{}\"'`«»№/\\|+*]", " ", text)
     text = re.sub(r"[–—−]", "-", text)
     return re.sub(r"\s+", " ", text).strip()
 
@@ -136,6 +151,15 @@ def to_decimal(value: object, *, prefer_thousands_group: bool) -> Decimal:
     text = _strip_numeric_noise(str(value).strip())
     if not text:
         raise ValueParseError("empty numeric value")
+
+    magnitude = 1
+    upper = text.upper()
+    for suffix, multiplier in _MAGNITUDE_SUFFIXES:
+        if upper.endswith(suffix) and len(upper) > len(suffix):
+            magnitude = multiplier
+            text = text[: -len(suffix)]
+            break
+
     if not re.fullmatch(r"[+-]?[\d.,]+", text):
         raise ValueParseError(f"not a number: {value!r}")
 
@@ -153,16 +177,21 @@ def to_decimal(value: object, *, prefer_thousands_group: bool) -> Decimal:
             text = text.replace(sep, ".")
 
     try:
-        return Decimal(text)
+        return Decimal(text) * magnitude
     except InvalidOperation as exc:  # pragma: no cover - guarded by the regex above
         raise ValueParseError(f"not a number: {value!r}") from exc
 
 
-def parse_int(value: object) -> int | None:
-    """Parse an integer count (subscribers, views). Blank values return ``None``."""
+def parse_int(value: object, *, scale: int = 1) -> int | None:
+    """Parse an integer count (subscribers, views). Blank values return ``None``.
+
+    ``scale`` applies a column-level unit declared by the source header, such as
+    "Просмотры, тыс" where ``0.1`` means 100. It is applied before the whole
+    number check, so scaled fractional values are valid.
+    """
     if is_blank(value):
         return None
-    number = to_decimal(value, prefer_thousands_group=True)
+    number = to_decimal(value, prefer_thousands_group=True) * scale
     if number != number.to_integral_value():
         raise ValueParseError(f"expected a whole number, got {value!r}")
     return int(number)
@@ -175,12 +204,20 @@ def parse_decimal(value: object, *, prefer_thousands_group: bool = False) -> Dec
     return to_decimal(value, prefer_thousands_group=prefer_thousands_group)
 
 
-def parse_percent(value: object) -> tuple[Decimal | None, str | None]:
+def parse_percent(
+    value: object, *, declared_percent_points: bool = False
+) -> tuple[Decimal | None, str | None]:
     """Parse a percentage into a fraction, returning ``(value, warning)``.
 
     ``"24,7%"`` and ``24.7`` both become ``0.247``; ``0.247`` stays ``0.247``.
     A value above 1 without a ``%`` sign is interpreted as percent points and
     reported through the warning, never silently.
+
+    ``declared_percent_points`` says the source header already states the unit
+    (``"ERR, %"``), which removes the ambiguity and therefore the warning. The
+    declaration then wins for every value, including the boundary value ``1``:
+    in a column of integer percentages ``1`` means 1%, not 100%. A value below 1
+    is unusual for such a column, so it is still converted but reported.
     """
     if is_blank(value):
         return None, None
@@ -189,6 +226,13 @@ def parse_percent(value: object) -> tuple[Decimal | None, str | None]:
     number = to_decimal(text.replace("%", ""), prefer_thousands_group=False)
     if has_percent_sign:
         return number / 100, None
+    if declared_percent_points:
+        warning = (
+            None
+            if number == 0 or number >= 1
+            else f"column declares percent points but value {number} is below 1"
+        )
+        return number / 100, warning
     if number > 1:
         return number / 100, f"value {number} has no '%' sign; interpreted as percent points"
     return number, None
