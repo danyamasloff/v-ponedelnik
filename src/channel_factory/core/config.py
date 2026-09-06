@@ -148,6 +148,31 @@ def get_settings() -> Settings:
     return Settings()  # type: ignore[call-arg]  # values come from env/.env
 
 
+def diagnose_database_url(url: str) -> list[str]:
+    """Name the misconfigurations that produce unhelpful driver errors.
+
+    Written after a real deployment: a connection string pasted from a hosting
+    panel came through with the "?" percent-encoded, and asyncpg reported it as
+    `unexpected keyword argument '?ssl'` — true, and useless to whoever set
+    the secret. These checks turn each such case into a sentence naming the fix.
+    """
+    problems: list[str] = []
+    if "%3F" in url.upper():
+        problems.append(
+            "в строке есть %3F — знак ? закодирован, поэтому параметры "
+            "попадают в имя базы; вставьте обычный ?"
+        )
+    if not url.startswith("postgresql+asyncpg://"):
+        problems.append("драйвер должен быть указан явно: postgresql+asyncpg://")
+    if "sslmode=" in url:
+        problems.append("asyncpg не понимает sslmode — замените на ssl=require")
+    if "channel_binding=" in url:
+        problems.append("asyncpg не понимает channel_binding — уберите этот параметр")
+    if "neon.tech" in url and "ssl" not in url.split("?", 1)[-1]:
+        problems.append("Neon отклоняет незашифрованные подключения — добавьте ?ssl=require")
+    return problems
+
+
 def masked_database_url(url: str) -> str:
     """Render a database URL with the password replaced by ``***``."""
     return make_url(url).render_as_string(hide_password=True)

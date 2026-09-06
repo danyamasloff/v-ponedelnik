@@ -8,9 +8,15 @@ import typer
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import func, select, text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from channel_factory.cli.app import app
-from channel_factory.core.config import PROJECT_ROOT, get_settings, masked_database_url
+from channel_factory.core.config import (
+    PROJECT_ROOT,
+    diagnose_database_url,
+    get_settings,
+    masked_database_url,
+)
 from channel_factory.core.logging import setup_logging
 from channel_factory.db.models import (
     AiGeneration,
@@ -66,7 +72,20 @@ def db_status() -> None:
         asyncio.run(_report_status())
     except Exception as exc:
         typer.secho(f"Status   : UNREACHABLE ({type(exc).__name__}: {exc})", fg=typer.colors.RED)
+        # The driver error names the symptom; these name the fix.
+        for problem in diagnose_database_url(settings.database_url):
+            typer.secho(f"  ! {problem}", fg=typer.colors.YELLOW)
         raise typer.Exit(code=1) from exc
+
+
+async def _has_table(session: AsyncSession, name: str) -> bool:
+    """Whether a table exists, asked of the catalogue rather than by querying it.
+
+    Selecting from a missing table raises, and that exception would surface as
+    a connection failure two frames up.
+    """
+    found = await session.execute(text("SELECT to_regclass(:name)"), {"name": name})
+    return found.scalar_one_or_none() is not None
 
 
 async def _report_status() -> None:
@@ -76,10 +95,27 @@ async def _report_status() -> None:
             version = (await session.execute(text("SELECT version()"))).scalar_one()
             typer.echo(f"Server   : {str(version).split(' on ')[0]}")
 
+            # A brand-new database has no alembic_version table at all. That
+            # is not a connection problem and must not be reported as one:
+            # confusing "cannot reach the database" with "schema not applied
+            # yet" sends whoever set it up looking for the wrong fault.
+            head = _head_revision()
+            if not await _has_table(session, "alembic_version"):
+                typer.secho(
+                    f"Migration: не применены (пустая база, head {head})",
+                    fg=typer.colors.YELLOW,
+                )
+                typer.echo("Tables   : схемы ещё нет")
+                typer.secho(
+                    "Status   : ПОДКЛЮЧЕНИЕ ЕСТЬ, нужна миграция "
+                    "(alembic upgrade head)",
+                    fg=typer.colors.YELLOW,
+                )
+                return
+
             current = (
                 await session.execute(text("SELECT version_num FROM alembic_version"))
             ).scalar_one_or_none()
-            head = _head_revision()
             if current is None:
                 state = "no migrations applied"
             elif current == head:

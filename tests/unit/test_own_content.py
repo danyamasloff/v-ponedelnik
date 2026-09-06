@@ -20,6 +20,7 @@ from channel_factory.content.evergreen import (
     load_topics,
 )
 from channel_factory.content.generation import GenerationError, clean_action
+from channel_factory.core.config import diagnose_database_url
 from channel_factory.core.enums import EventType, Platform
 from channel_factory.publishers.scheduler import parse_own_slots
 
@@ -240,3 +241,45 @@ class TestTrackingParameters:
         )
         assert "utm_source" not in draft.text
         assert draft.sources == ["https://habr.com/ru/articles/1/"]
+
+
+class TestDatabaseUrlDiagnosis:
+    """A driver error names the symptom; these name the fix.
+
+    Written after a real deployment: a string pasted from a hosting panel came
+    through with the "?" percent-encoded, and asyncpg reported it as
+    "unexpected keyword argument '?ssl'" — true, and useless to whoever set the
+    secret.
+    """
+
+    def test_encoded_question_mark_is_caught(self) -> None:
+        problems = diagnose_database_url(
+            "postgresql+asyncpg://u:p@ep-x.neon.tech/neondb%3Fssl=require"
+        )
+        assert any("%3F" in problem for problem in problems)
+
+    def test_sslmode_is_caught(self) -> None:
+        problems = diagnose_database_url(
+            "postgresql+asyncpg://u:p@ep-x.neon.tech/neondb?sslmode=require"
+        )
+        assert any("sslmode" in problem for problem in problems)
+
+    def test_missing_driver_is_caught(self) -> None:
+        problems = diagnose_database_url("postgresql://u:p@ep-x.neon.tech/neondb?ssl=require")
+        assert any("postgresql+asyncpg" in problem for problem in problems)
+
+    def test_neon_without_tls_is_caught(self) -> None:
+        problems = diagnose_database_url("postgresql+asyncpg://u:p@ep-x.neon.tech/neondb")
+        assert any("ssl=require" in problem for problem in problems)
+
+    def test_a_correct_url_has_no_complaints(self) -> None:
+        assert (
+            diagnose_database_url("postgresql+asyncpg://u:p@ep-x.neon.tech/neondb?ssl=require")
+            == []
+        )
+
+    def test_a_local_url_is_not_pushed_towards_tls(self) -> None:
+        """Only Neon refuses plaintext; a local database must not be nagged."""
+        assert (
+            diagnose_database_url("postgresql+asyncpg://u:p@localhost:5432/channel_factory") == []
+        )
