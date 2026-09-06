@@ -37,6 +37,7 @@ from channel_factory.db.repositories.research import ResearchClusterRepository
 from channel_factory.db.session import Database
 from channel_factory.publishers.base import (
     MediaItem,
+    PostFormat,
     Publisher,
     PublishError,
     PublishRequest,
@@ -190,6 +191,10 @@ class PublishingService:
             text=draft.text,
             channel_ref=self._channel_ref or "",
             media=(card,) if card else (),
+            # Drafts mark the headline with **...**, which MAX renders only
+            # when the message says it is markdown. Sent as plain text the
+            # asterisks reach the reader literally.
+            format=PostFormat.MARKDOWN,
         )
         problems = self._publisher.validate(request)
         payload = self._publisher.build_payload(request)
@@ -271,6 +276,10 @@ class PublishingService:
             text=draft.text,
             channel_ref=self._channel_ref or "",
             media=(card,) if card else (),
+            # Drafts mark the headline with **...**, which MAX renders only
+            # when the message says it is markdown. Sent as plain text the
+            # asterisks reach the reader literally.
+            format=PostFormat.MARKDOWN,
         )
         problems = self._publisher.validate(request)
         payload = self._publisher.build_payload(request)

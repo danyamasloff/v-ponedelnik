@@ -13,6 +13,9 @@ Design decisions worth stating:
 * Colour comes from the vendor name, deterministically: the same vendor always
   gets the same accent, so a feed of cards looks like a series rather than a
   random assortment.
+* A vertical gradient and one oversized corner arc give the card depth without
+  decoration that competes with the text. Everything else is typography: at
+  thumbnail size only the headline survives, so it gets the room.
 * Fonts are found on the machine; if none is found we say so instead of
   rendering an unreadable bitmap-font card.
 """
@@ -46,6 +49,9 @@ PALETTE: tuple[tuple[int, int, int], ...] = (
 
 TEXT_COLOR = (243, 246, 250)
 MUTED_COLOR = (168, 182, 200)
+# The kicker is the only place with a warm tint: it marks the rubric
+# without pulling attention from the headline.
+ACCENT_TEXT = (233, 196, 106)
 
 # Fonts shipped with Windows that cover Cyrillic. Checked in order; the first
 # that exists wins. A missing font is reported, never silently substituted.
@@ -133,6 +139,65 @@ def _clean(text: str) -> str:
     )
 
 
+def _lighten(color: tuple[int, int, int], amount: int) -> tuple[int, int, int]:
+    """Same hue, more light. Used for rules and the accent bar."""
+    return tuple(min(255, channel + amount) for channel in color)  # type: ignore[return-value]
+
+
+def _gradient(base: tuple[int, int, int]) -> Image.Image:
+    """Vertical gradient from a lighter top to the base colour.
+
+    A flat rectangle reads as a placeholder; a gradient reads as designed, and
+    costs one pass over the height of the image.
+    """
+    top = _lighten(base, 26)
+    image = Image.new("RGB", (CARD_WIDTH, CARD_HEIGHT), base)
+    draw = ImageDraw.Draw(image)
+    for y in range(CARD_HEIGHT):
+        ratio = y / CARD_HEIGHT
+        row = tuple(
+            int(top[channel] + (base[channel] - top[channel]) * ratio) for channel in range(3)
+        )
+        draw.line((0, y, CARD_WIDTH, y), fill=row)
+    return image
+
+
+def _draw_arc(image: Image.Image, base: tuple[int, int, int]) -> None:
+    """One oversized, barely-there arc in the corner.
+
+    Drawn on its own translucent layer so it lifts the background without
+    competing with the headline; at thumbnail size it registers as texture.
+    """
+    layer = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    ImageDraw.Draw(layer).ellipse(
+        (CARD_WIDTH - 260, -240, CARD_WIDTH + 300, 320),
+        outline=(*_lighten(base, 120), 90),
+        width=3,
+    )
+    ImageDraw.Draw(layer).ellipse(
+        (CARD_WIDTH - 160, -160, CARD_WIDTH + 420, 420),
+        outline=(*_lighten(base, 90), 60),
+        width=2,
+    )
+    image.paste(Image.alpha_composite(image.convert("RGBA"), layer).convert("RGB"), (0, 0))
+
+
+def _draw_tracked(
+    draw: ImageDraw.ImageDraw,
+    position: tuple[int, int],
+    text: str,
+    font: ImageFont.FreeTypeFont,
+    fill: tuple[int, int, int],
+    *,
+    spacing: int,
+) -> None:
+    """Letter-spaced text. Pillow has no tracking, so glyphs are placed by hand."""
+    x, y = position
+    for char in text:
+        draw.text((x, y), char, font=font, fill=fill)
+        x += int(font.getlength(char)) + spacing
+
+
 def render_card(content: CardContent, destination: Path) -> Path:
     """Draw the card and write it as PNG. Returns the path written."""
     title = _clean(content.title)
@@ -142,43 +207,45 @@ def render_card(content: CardContent, destination: Path) -> Path:
     bold_path, regular_path = _load_fonts()
     background = accent_for(content.vendor or title)
 
-    image = Image.new("RGB", (CARD_WIDTH, CARD_HEIGHT), background)
+    image = _gradient(background)
     draw = ImageDraw.Draw(image)
+    _draw_arc(image, background)
 
     # A brighter bar keyed to the same accent: enough structure to read as a
     # designed card, cheap enough to stay legible at thumbnail size.
-    bar_color = tuple(min(255, channel + 90) for channel in background)
-    draw.rectangle((0, 0, 12, CARD_HEIGHT), fill=bar_color)
+    draw.rectangle((0, 0, 14, CARD_HEIGHT), fill=_lighten(background, 110))
 
     text_left = MARGIN
-    max_width = CARD_WIDTH - MARGIN * 2
+    max_width = CARD_WIDTH - MARGIN * 2 - 40
 
-    kicker_font = ImageFont.truetype(regular_path, 30)
-    footer_font = ImageFont.truetype(regular_path, 28)
+    kicker_font = ImageFont.truetype(bold_path, 26)
+    footer_font = ImageFont.truetype(regular_path, 26)
     title_font, title_lines = _fit_title(title, bold_path, max_width)
 
     kicker = _clean(content.kicker or content.vendor or "")
     y = MARGIN
     if kicker:
-        draw.text((text_left, y), kicker.upper(), font=kicker_font, fill=MUTED_COLOR)
-        y += 60
+        _draw_tracked(draw, (text_left, y), kicker.upper(), kicker_font, ACCENT_TEXT, spacing=3)
+        y += 58
 
-    line_height = title_font.size + 14
+    footer = _clean(content.footer or "")
+    footer_top = CARD_HEIGHT - MARGIN - (58 if footer else 0)
+
+    line_height = title_font.size + 16
     block_height = line_height * len(title_lines)
     # Vertically centre the headline in the space between kicker and footer.
-    available_top = y
-    available_bottom = CARD_HEIGHT - MARGIN - 50
-    y = max(available_top, available_top + (available_bottom - available_top - block_height) // 2)
+    y = max(y, y + (footer_top - y - block_height) // 2)
 
     for line in title_lines:
         draw.text((text_left, y), line, font=title_font, fill=TEXT_COLOR)
         y += line_height
 
-    footer = _clean(content.footer or "")
     if footer:
-        draw.text(
-            (text_left, CARD_HEIGHT - MARGIN - 30), footer, font=footer_font, fill=MUTED_COLOR
+        rule_y = footer_top - 2
+        draw.line(
+            (text_left, rule_y, text_left + 120, rule_y), fill=_lighten(background, 70), width=3
         )
+        draw.text((text_left, rule_y + 18), footer, font=footer_font, fill=MUTED_COLOR)
 
     destination.parent.mkdir(parents=True, exist_ok=True)
     image.save(destination, format="PNG", optimize=True)
