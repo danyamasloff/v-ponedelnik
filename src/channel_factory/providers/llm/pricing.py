@@ -55,6 +55,10 @@ TASK_MODELS: dict[AiTaskType, str] = {
     # Search needs the current web_search tool variant, which the Haiku
     # generation does not support.
     AiTaskType.SEARCH: SONNET,
+    # Post text is what readers judge the channel by, so it does not go to the
+    # cheapest model. This route is the paid fallback only: content generation
+    # normally runs on a local model or the Gemini free tier.
+    AiTaskType.CONTENT_DRAFT: SONNET,
 }
 
 

@@ -1,0 +1,223 @@
+"""Filling the daily posting slots.
+
+The channel runs on a cadence — three posts a day — and the thing that keeps a
+cadence is not a queue but a rule that can be re-evaluated at any moment:
+
+    for the slot that is open right now, has a post already gone out?
+
+Everything follows from that. There is no schedule table to drift out of sync
+with reality, because reality *is* the ``publications`` table: a slot counts as
+filled when a publication exists inside its window. That makes the runner
+idempotent — running it once an hour, or five times in a minute, or twice after
+a reboot, produces at most one post per slot.
+
+A missed run is survivable rather than silently skipped: a slot stays fillable
+for ``window`` minutes after it opens, so an hourly runner still catches a slot
+whose exact minute it slept through, and nothing double-posts.
+
+Simulated publications count as filled. A dry run must rehearse the real thing,
+including the "already posted today" arithmetic; if it did not, the rehearsal
+would post three times and the live run once.
+"""
+
+from __future__ import annotations
+
+import uuid
+from dataclasses import dataclass
+from datetime import UTC, datetime, time, timedelta
+from enum import StrEnum
+
+from sqlalchemy import select
+
+from channel_factory.core.enums import ClusterStatus, PublicationStatus
+from channel_factory.core.logging import get_logger
+from channel_factory.db.models import Publication, ResearchCluster
+from channel_factory.db.repositories.research import ResearchClusterRepository
+from channel_factory.db.session import Database
+from channel_factory.publishers.service import PublishingService, PublishOutcome
+
+logger = get_logger(__name__)
+
+#: A publication in one of these states occupies its slot.
+OCCUPYING_STATUSES = (PublicationStatus.PUBLISHED, PublicationStatus.SIMULATED)
+
+
+class SchedulerAction(StrEnum):
+    """What the runner did this time."""
+
+    NO_SLOT = "NO_SLOT"
+    ALREADY_FILLED = "ALREADY_FILLED"
+    NO_TOPIC = "NO_TOPIC"
+    ATTEMPTED = "ATTEMPTED"
+
+
+@dataclass(frozen=True)
+class Slot:
+    """One posting slot on one day, in local time."""
+
+    starts_at: datetime
+    ends_at: datetime
+    index: int
+
+    @property
+    def label(self) -> str:
+        return f"{self.starts_at:%Y-%m-%d %H:%M}"
+
+
+@dataclass(frozen=True)
+class SchedulerOutcome:
+    """Result of one run, in terms a report can print."""
+
+    action: SchedulerAction
+    slot: Slot | None = None
+    detail: str | None = None
+    outcome: PublishOutcome | None = None
+    cluster_id: uuid.UUID | None = None
+
+
+def parse_slots(spec: str) -> tuple[time, ...]:
+    """Parse ``"09:00,14:00,19:00"`` into times, sorted and deduplicated."""
+    times: set[time] = set()
+    for chunk in spec.split(","):
+        raw = chunk.strip()
+        if not raw:
+            continue
+        try:
+            hour, minute = (int(part) for part in raw.split(":", 1))
+            times.add(time(hour=hour, minute=minute))
+        except (ValueError, TypeError) as exc:
+            raise ValueError(f"bad slot time {raw!r}, expected HH:MM") from exc
+    if not times:
+        raise ValueError("no posting slots configured")
+    return tuple(sorted(times))
+
+
+def slots_for_day(day: datetime, slot_times: tuple[time, ...], window: timedelta) -> list[Slot]:
+    """Every slot of one calendar day, in the day's own timezone."""
+    return [
+        Slot(
+            starts_at=day.replace(hour=at.hour, minute=at.minute, second=0, microsecond=0),
+            ends_at=day.replace(hour=at.hour, minute=at.minute, second=0, microsecond=0) + window,
+            index=index,
+        )
+        for index, at in enumerate(slot_times)
+    ]
+
+
+def open_slot(now: datetime, slot_times: tuple[time, ...], window: timedelta) -> Slot | None:
+    """The slot whose window contains ``now``, if any.
+
+    Yesterday's late slot is considered too: a window that crosses midnight
+    should not be lost just because the date rolled over.
+    """
+    candidates = slots_for_day(now - timedelta(days=1), slot_times, window)
+    candidates += slots_for_day(now, slot_times, window)
+    open_now = [slot for slot in candidates if slot.starts_at <= now < slot.ends_at]
+    # The most recent one: if two windows overlap, the newer slot is the one
+    # we owe a post for.
+    return open_now[-1] if open_now else None
+
+
+class PostingScheduler:
+    """Publishes at most one post per slot, from the best available topic."""
+
+    def __init__(
+        self,
+        database: Database,
+        service: PublishingService,
+        *,
+        slot_times: tuple[time, ...],
+        window: timedelta,
+    ) -> None:
+        self._database = database
+        self._service = service
+        self._slot_times = slot_times
+        self._window = window
+
+    async def run_once(self, now: datetime | None = None) -> SchedulerOutcome:
+        """Fill the currently open slot, or explain why nothing was posted."""
+        moment = now or datetime.now().astimezone()
+        slot = open_slot(moment, self._slot_times, self._window)
+        if slot is None:
+            return SchedulerOutcome(
+                action=SchedulerAction.NO_SLOT,
+                detail=f"вне окна публикации (слоты: {self._slot_spec()})",
+            )
+
+        if await self.slot_filled(slot):
+            return SchedulerOutcome(
+                action=SchedulerAction.ALREADY_FILLED,
+                slot=slot,
+                detail="в этом слоте уже был пост",
+            )
+
+        cluster = await self.next_cluster()
+        if cluster is None:
+            return SchedulerOutcome(
+                action=SchedulerAction.NO_TOPIC,
+                slot=slot,
+                detail=(
+                    "нет отобранных тем: запустите research-poll, "
+                    "research-cluster и score-topics"
+                ),
+            )
+
+        logger.info(
+            "scheduler.publishing",
+            extra={"slot": slot.label, "cluster": str(cluster.id)},
+        )
+        outcome = await self._service.publish_cluster(cluster.id)
+        return SchedulerOutcome(
+            action=SchedulerAction.ATTEMPTED,
+            slot=slot,
+            outcome=outcome,
+            cluster_id=cluster.id,
+        )
+
+    async def slot_filled(self, slot: Slot) -> bool:
+        """Whether a post already occupies this slot."""
+        async with self._database.session() as session:
+            found = await session.execute(
+                select(Publication.id)
+                .where(
+                    Publication.status.in_(OCCUPYING_STATUSES),
+                    Publication.created_at >= slot.starts_at.astimezone(UTC),
+                    Publication.created_at < slot.ends_at.astimezone(UTC),
+                )
+                .limit(1)
+            )
+        return found.scalar_one_or_none() is not None
+
+    async def next_cluster(self) -> ResearchCluster | None:
+        """Highest-scoring selected topic that has not been posted yet."""
+        async with self._database.session() as session:
+            used = await session.execute(
+                select(Publication.research_cluster_id).where(
+                    Publication.status.in_(OCCUPYING_STATUSES),
+                    Publication.research_cluster_id.is_not(None),
+                )
+            )
+            published = {row for row in used.scalars().all() if row is not None}
+
+            clusters = await ResearchClusterRepository(session).top(
+                statuses=[ClusterStatus.SELECTED], limit=50
+            )
+        for cluster in clusters:
+            if cluster.id not in published:
+                return cluster
+        return None
+
+    async def upcoming(self, days: int = 1, now: datetime | None = None) -> list[Slot]:
+        """Slots from now until ``days`` ahead — what the plan looks like."""
+        moment = now or datetime.now().astimezone()
+        plan: list[Slot] = []
+        for offset in range(days):
+            for slot in slots_for_day(
+                moment + timedelta(days=offset), self._slot_times, self._window
+            ):
+                if slot.ends_at > moment:
+                    plan.append(slot)
+        return plan
+
+    def _slot_spec(self) -> str:
+        return ", ".join(f"{at:%H:%M}" for at in self._slot_times)

@@ -79,6 +79,23 @@ class Settings(BaseSettings):
     auto_publish_enabled: bool = False
     # MAX credentials are declared once, above, as SecretStr + int chat id.
     telegram_bot_token: str | None = None
+
+    # --- Content generation (PHASE 5) ---
+    # A local model: free and offline. Used whenever it answers; the Gemini
+    # free tier is the fallback, and without either the drafts stay skeletons.
+    ollama_base_url: str = "http://127.0.0.1:11434"
+    ollama_model: str = "qwen2.5:7b-instruct"
+
+    # --- Posting schedule (PHASE 8) ---
+    # Local times of the daily slots. Three a day is the cadence the channel
+    # was planned around; a slot that has already been filled is never filled
+    # twice, so running the command more often is harmless.
+    publish_slots: str = "09:00,14:00,19:00"
+    # How long after a slot opens it may still be filled. Wider than the gap
+    # between runs, so a missed run does not silently skip a post.
+    publish_slot_window_minutes: int = 180
+    # Cards are rendered next to the reports, not into the repository root.
+    cards_dir: Path = PROJECT_ROOT / "reports" / "cards"
     telegram_channel_id: str | None = None
 
     # Hard spend ceilings. Enforced against the sum of ai_generations, so a bug

@@ -29,6 +29,14 @@ EVENT_PHRASES: dict[EventType, str] = {
     EventType.OTHER: "сообщил",
 }
 
+#: What to say when we have no usable product name. "обновил обновление" is
+#: what a naive fallback produces, so these events get their own wording.
+FALLBACK_PHRASES: dict[EventType, str] = {
+    EventType.RELEASE: "выпустил обновление",
+    EventType.UPDATE: "выпустил обновление",
+    EventType.OTHER: "сообщил об обновлении",
+}
+
 VENDOR_NAMES: dict[str, str] = {
     "openai": "OpenAI",
     "anthropic": "Anthropic",
@@ -88,10 +96,20 @@ def fact_line(
     if not label:
         return None
     phrase = EVENT_PHRASES.get(event_type, EVENT_PHRASES[EventType.OTHER])
-    subject = " ".join(part for part in (product, version) if part).strip()
-    if subject:
+    # A product extracted as a bare lowercase word ("scheduled", "automation")
+    # produces a sentence that reads as broken Russian. Better to name only the
+    # vendor and the event than to publish a fragment as if it were a product.
+    if product and _looks_like_a_name(product):
+        subject = " ".join(part for part in (product, version) if part).strip()
         return f"{label} {phrase} {subject}."
-    return f"{label} {phrase} обновление."
+    # Some phrases already carry their object ("опубликовал руководство"); the
+    # transitive ones get a fallback object instead of being left dangling.
+    return f"{label} {FALLBACK_PHRASES.get(event_type, phrase)}."
+
+
+def _looks_like_a_name(product: str) -> bool:
+    """Whether the extracted product reads as a product name, not a stray word."""
+    return any(part[:1].isupper() or any(ch.isdigit() for ch in part) for part in product.split())
 
 
 def render_draft(
@@ -107,15 +125,26 @@ def render_draft(
     primary_source: str | None,
     trust: str | None = None,
     text_limit: int = 4000,
+    analysis: str | None = None,
+    headline: str | None = None,
 ) -> PostDraft:
-    """Assemble the skeleton for one platform."""
-    lines: list[str] = [f"**{title.strip()}**", ""]
+    """Assemble the post for one platform.
+
+    Without ``analysis`` this is a skeleton and says so. With it — written by
+    PHASE 5 generation from the same facts — the placeholder is replaced and
+    the draft becomes publishable. The facts, the title and the source link are
+    never touched by the generator.
+    """
+    # A generated Russian headline wins over the source's own title, which is
+    # often in another language. The original stays in ``PostDraft.title``.
+    shown_title = (headline or title).strip()
+    lines: list[str] = [f"**{shown_title}**", ""]
 
     facts = fact_line(vendor=vendor, product=product, version=version, event_type=event_type)
     if facts:
         lines += [facts, ""]
 
-    lines += [ANALYSIS_PLACEHOLDER, ""]
+    lines += [analysis.strip() if analysis and analysis.strip() else ANALYSIS_PLACEHOLDER, ""]
 
     sources: list[str] = []
     if primary_url:

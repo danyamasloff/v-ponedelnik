@@ -97,7 +97,10 @@ uv run python -m channel_factory.cli --help
 | `max-check` | Токен, канал и права бота на публикацию |
 | `max-post` | Опубликовать пост в канал MAX |
 | `max-edit-post` / `max-delete-post` | Изменить или удалить свой пост |
-| `publish-preview` / `publish-cluster` | Пост из отобранной темы: предпросмотр и публикация |
+| `publish-preview` / `publish-max` | Пост из отобранной темы: предпросмотр и публикация |
+| `publish-due` | Опубликовать в открытый слот, если он пуст (команда для планировщика) |
+| `publish-plan` | Слоты на ближайшие дни и запас тем |
+| `publish-log` | История публикаций, включая симуляции |
 
 ### Импорт выгрузки
 
@@ -184,6 +187,24 @@ uv run python -m channel_factory.cli max-post "Текст поста" --dry-run
 в соответствующей фазе.
 
 Подробности — в [docs/max-publishing.md](docs/max-publishing.md).
+
+### Три поста в день
+
+Конвейер `research → черновик → разбор → карточка → слот` описан в
+[docs/posting-pipeline.md](docs/posting-pipeline.md). Коротко:
+
+```bash
+uv run python -m channel_factory.cli publish-plan --days 3
+```
+
+```bash
+uv run python -m channel_factory.cli publish-due
+```
+
+`publish-due` идемпотентна: в один слот уходит максимум один пост, поэтому её
+можно звать по расписанию хоть каждый час. Пока `PUBLISH_MODE=DRY_RUN` или
+`AUTO_PUBLISH_ENABLED=false`, конвейер проходит весь путь и ничего не
+отправляет.
 
 Разрез по платформам (единый бренд запускается в Telegram и MAX одновременно):
 

@@ -205,6 +205,9 @@ class AiTaskType(StrEnum):
     DEDUP_ADJUDICATION = "DEDUP_ADJUDICATION"
     SEARCH = "SEARCH"
     SYNTHESIS = "SYNTHESIS"
+    # Writing the analysis paragraph of a post (PHASE 5). Separate from
+    # SYNTHESIS so content generation can be costed and audited on its own.
+    CONTENT_DRAFT = "CONTENT_DRAFT"
 
 
 class PublishMode(StrEnum):
