@@ -15,6 +15,7 @@ on:
         description: "Только проверить доступ к MAX и базе, ничего не публиковать"
         type: boolean
         default: false
+        required: false
 
 concurrency:
   # Два прогона одновременно не нужны: слот всё равно один.
