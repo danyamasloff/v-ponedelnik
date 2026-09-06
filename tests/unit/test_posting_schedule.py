@@ -20,7 +20,12 @@ from channel_factory.content.generation import (
     clean_analysis,
 )
 from channel_factory.core.enums import EventType
-from channel_factory.publishers.scheduler import open_slot, parse_slots, slots_for_day
+from channel_factory.publishers.scheduler import (
+    BreakingRules,
+    open_slot,
+    parse_slots,
+    slots_for_day,
+)
 
 SLOTS = (time(9, 0), time(14, 0), time(19, 0))
 WINDOW = timedelta(minutes=180)
@@ -187,3 +192,24 @@ class TestFactLine:
         assert (
             fact_line(vendor=None, product="X", version=None, event_type=EventType.RELEASE) is None
         )
+
+
+class TestBreakingRules:
+    """The bar for interrupting the schedule.
+
+    Every condition here exists to make BREAKING rare: a channel that shouts
+    daily is a feed, and "breaking" that turns out routine costs more trust
+    than a late post.
+    """
+
+    def test_defaults_demand_confirmation(self) -> None:
+        rules = BreakingRules()
+        assert rules.min_sources >= 2
+        assert rules.min_score >= 90
+        assert rules.max_per_day <= 3
+
+    def test_a_gap_between_posts_is_enforced_by_default(self) -> None:
+        assert BreakingRules().min_gap >= timedelta(minutes=30)
+
+    def test_it_can_be_switched_off_entirely(self) -> None:
+        assert BreakingRules(enabled=False).enabled is False

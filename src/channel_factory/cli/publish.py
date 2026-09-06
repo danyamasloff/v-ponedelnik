@@ -23,6 +23,7 @@ from channel_factory.publishers.max.client import MaxApiClient
 from channel_factory.publishers.max.factory import build_publisher
 from channel_factory.publishers.scheduler import (
     OCCUPYING_STATUSES,
+    BreakingRules,
     PostingScheduler,
     SchedulerAction,
     parse_own_slots,
@@ -52,6 +53,15 @@ def _scheduler(database: Database, service: PublishingService) -> PostingSchedul
         window=timedelta(minutes=settings.publish_slot_window_minutes),
         own_slot_indexes=parse_own_slots(settings.publish_own_slots),
         topics_path=settings.evergreen_topics_config,
+        max_topic_age=timedelta(hours=settings.publish_max_topic_age_hours),
+        breaking=BreakingRules(
+            enabled=settings.breaking_enabled,
+            min_score=settings.breaking_min_score,
+            max_age=timedelta(minutes=settings.breaking_max_age_minutes),
+            min_sources=settings.breaking_min_sources,
+            max_per_day=settings.breaking_max_per_day,
+            min_gap=timedelta(minutes=settings.breaking_min_gap_minutes),
+        ),
     )
 
 
@@ -246,7 +256,9 @@ async def _publish_due(moment: datetime | None) -> None:
         typer.echo(f"Режим      : {settings.publish_mode.value}")
         typer.echo(f"Автопостинг: {'включён' if settings.auto_publish_enabled else 'выключен'}")
 
-        if result.action is not SchedulerAction.ATTEMPTED:
+        if result.action is SchedulerAction.BREAKING:
+            typer.secho("Срочная новость — публикуем вне слота", fg=typer.colors.MAGENTA)
+        elif result.action is not SchedulerAction.ATTEMPTED:
             typer.secho(f"Действие   : {result.action.value}", fg=typer.colors.YELLOW)
             typer.echo(f"Причина    : {result.detail}")
             return

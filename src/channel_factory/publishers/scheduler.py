@@ -28,10 +28,10 @@ from datetime import UTC, datetime, time, timedelta
 from enum import StrEnum
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from channel_factory.content.evergreen import EvergreenTopic, load_topics
-from channel_factory.core.enums import ClusterStatus, PublicationStatus
+from channel_factory.core.enums import ClusterStatus, PublicationStatus, TrustLevel
 from channel_factory.core.logging import get_logger
 from channel_factory.db.models import Publication, ResearchCluster
 from channel_factory.db.repositories.research import ResearchClusterRepository
@@ -47,6 +47,7 @@ OCCUPYING_STATUSES = (PublicationStatus.PUBLISHED, PublicationStatus.SIMULATED)
 class SchedulerAction(StrEnum):
     """What the runner did this time."""
 
+    BREAKING = "BREAKING"
     NO_SLOT = "NO_SLOT"
     ALREADY_FILLED = "ALREADY_FILLED"
     NO_TOPIC = "NO_TOPIC"
@@ -64,6 +65,24 @@ class Slot:
     @property
     def label(self) -> str:
         return f"{self.starts_at:%Y-%m-%d %H:%M}"
+
+
+@dataclass(frozen=True)
+class BreakingRules:
+    """When a topic is allowed to jump the queue.
+
+    Every field here exists to make "breaking" rare. A channel that shouts
+    daily is a feed; one that interrupts twice a month is worth a
+    notification. Fresh and high-scoring is not enough — the event also has to
+    be confirmed, either by several sources or by the vendor publishing it.
+    """
+
+    enabled: bool = True
+    min_score: float = 90.0
+    max_age: timedelta = timedelta(hours=4)
+    min_sources: int = 2
+    max_per_day: int = 2
+    min_gap: timedelta = timedelta(minutes=90)
 
 
 @dataclass(frozen=True)
@@ -146,6 +165,8 @@ class PostingScheduler:
         window: timedelta,
         own_slot_indexes: frozenset[int] = frozenset(),
         topics_path: Path | None = None,
+        max_topic_age: timedelta | None = None,
+        breaking: BreakingRules | None = None,
     ) -> None:
         self._database = database
         self._service = service
@@ -156,10 +177,23 @@ class PostingScheduler:
         # its own, so this is a deliberate reservation, not a fallback.
         self._own_slot_indexes = own_slot_indexes
         self._topics_path = topics_path
+        # Stale news is worse than no news: the reader learns the channel is
+        # behind, which is exactly the reputation an automated feed must avoid.
+        self._max_topic_age = max_topic_age
+        self._breaking = breaking or BreakingRules()
 
     async def run_once(self, now: datetime | None = None) -> SchedulerOutcome:
-        """Fill the currently open slot, or explain why nothing was posted."""
+        """Publish breaking news if there is any, otherwise fill the open slot."""
         moment = now or datetime.now().astimezone()
+
+        hot = await self.breaking_cluster(moment)
+        if hot is not None:
+            logger.info("scheduler.publishing.breaking", extra={"cluster": str(hot.id)})
+            outcome = await self._service.publish_cluster(hot.id)
+            return SchedulerOutcome(
+                action=SchedulerAction.BREAKING, outcome=outcome, cluster_id=hot.id
+            )
+
         slot = open_slot(moment, self._slot_times, self._window)
         if slot is None:
             return SchedulerOutcome(
@@ -221,6 +255,63 @@ class PostingScheduler:
             cluster_id=cluster.id,
         )
 
+    async def breaking_cluster(self, now: datetime) -> ResearchCluster | None:
+        """A topic big enough to publish right now, or nothing.
+
+        Returns nothing far more often than something — that is the point.
+        """
+        rules = self._breaking
+        if not rules.enabled:
+            return None
+
+        published = await self._published_cluster_ids()
+        async with self._database.session() as session:
+            recent = (
+                await session.execute(
+                    select(Publication.created_at)
+                    .where(Publication.status.in_(OCCUPYING_STATUSES))
+                    .order_by(Publication.created_at.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            day_start = now.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+            today = (
+                await session.execute(
+                    select(func.count())
+                    .select_from(Publication)
+                    .where(
+                        Publication.status.in_(OCCUPYING_STATUSES),
+                        Publication.created_at >= day_start,
+                        Publication.is_breaking.is_(True),
+                    )
+                )
+            ).scalar_one()
+
+        if today >= rules.max_per_day:
+            return None
+        if recent is not None and now.astimezone(UTC) - recent < rules.min_gap:
+            # Even real news waits a bit: two posts back to back read as noise.
+            return None
+
+        async with self._database.session() as session:
+            candidates = await ResearchClusterRepository(session).top(
+                statuses=[ClusterStatus.SELECTED], limit=20
+            )
+        for cluster in candidates:
+            if cluster.id in published:
+                continue
+            if cluster.topic_score is None or float(cluster.topic_score) < rules.min_score:
+                continue
+            seen_at = cluster.event_at or cluster.first_seen_at
+            if seen_at is None or now.astimezone(UTC) - seen_at > rules.max_age:
+                continue
+            # Confirmation: several sources, or the vendor's own announcement.
+            first_hand = cluster.max_trust in (TrustLevel.OFFICIAL, TrustLevel.PRIMARY)
+            if cluster.item_count < rules.min_sources and not first_hand:
+                continue
+            return cluster
+        return None
+
     async def slot_filled(self, slot: Slot) -> bool:
         """Whether a post already occupies this slot."""
         async with self._database.session() as session:
@@ -235,8 +326,8 @@ class PostingScheduler:
             )
         return found.scalar_one_or_none() is not None
 
-    async def next_cluster(self) -> ResearchCluster | None:
-        """Highest-scoring selected topic that has not been posted yet."""
+    async def _published_cluster_ids(self) -> set[uuid.UUID]:
+        """Clusters already used, so nothing is published twice."""
         async with self._database.session() as session:
             used = await session.execute(
                 select(Publication.research_cluster_id).where(
@@ -244,14 +335,25 @@ class PostingScheduler:
                     Publication.research_cluster_id.is_not(None),
                 )
             )
-            published = {row for row in used.scalars().all() if row is not None}
+        return {row for row in used.scalars().all() if row is not None}
 
+    async def next_cluster(self) -> ResearchCluster | None:
+        """Freshest high-scoring topic that has not been posted yet."""
+        published = await self._published_cluster_ids()
+        async with self._database.session() as session:
             clusters = await ResearchClusterRepository(session).top(
                 statuses=[ClusterStatus.SELECTED], limit=50
             )
         for cluster in clusters:
-            if cluster.id not in published:
-                return cluster
+            if cluster.id in published:
+                continue
+            if self._max_topic_age is not None:
+                seen_at = cluster.event_at or cluster.first_seen_at
+                if seen_at is not None:
+                    age = datetime.now(UTC) - seen_at
+                    if age > self._max_topic_age:
+                        continue
+            return cluster
         return None
 
     @property

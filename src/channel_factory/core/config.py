@@ -106,6 +106,22 @@ class Settings(BaseSettings):
     # indexes into PUBLISH_SLOTS. The middle slot by default: a channel that
     # only reacts to other people's releases never develops a voice.
     publish_own_slots: str = "1"
+    # A topic older than this is history, not news: the scheduled track skips
+    # it rather than telling readers about last week.
+    publish_max_topic_age_hours: int = 48
+
+    # --- Breaking news ---
+    # Something big should not wait for the next slot. The bar is deliberately
+    # high, because "breaking" that turns out to be routine costs more trust
+    # than a late post: high score, very fresh, and confirmed by more than one
+    # source or published by the vendor itself.
+    breaking_enabled: bool = True
+    breaking_min_score: float = 90.0
+    breaking_max_age_minutes: int = 240
+    breaking_min_sources: int = 2
+    # Ceilings so a busy news day cannot turn the channel into a feed.
+    breaking_max_per_day: int = 2
+    breaking_min_gap_minutes: int = 90
     evergreen_topics_config: Path = PROJECT_ROOT / "config" / "evergreen_topics.yaml"
     # Cards are rendered next to the reports, not into the repository root.
     cards_dir: Path = PROJECT_ROOT / "reports" / "cards"

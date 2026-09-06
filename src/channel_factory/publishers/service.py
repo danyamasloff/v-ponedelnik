@@ -263,7 +263,9 @@ class PublishingService:
             return None
         return MediaItem.from_path(path)
 
-    async def publish_cluster(self, cluster_id: uuid.UUID) -> PublishOutcome:
+    async def publish_cluster(
+        self, cluster_id: uuid.UUID, *, breaking: bool = False
+    ) -> PublishOutcome:
         """Take one cluster all the way to the platform, or as far as allowed."""
         async with self._database.session() as session:
             cluster = await session.get(ResearchCluster, cluster_id)
@@ -295,6 +297,7 @@ class PublishingService:
                 draft,
                 payload,
                 attachments=attachments,
+                breaking=breaking,
                 status=PublicationStatus.BLOCKED,
                 reason="черновик содержит незаполненные части (PHASE 5 ещё не построена)",
                 problems=problems,
@@ -304,6 +307,7 @@ class PublishingService:
                 draft,
                 payload,
                 attachments=attachments,
+                breaking=breaking,
                 status=PublicationStatus.BLOCKED,
                 reason="черновик не прошёл проверку",
                 problems=problems,
@@ -313,6 +317,7 @@ class PublishingService:
                 draft,
                 payload,
                 attachments=attachments,
+                breaking=breaking,
                 status=PublicationStatus.BLOCKED,
                 reason="AUTO_PUBLISH_ENABLED=false",
             )
@@ -321,6 +326,7 @@ class PublishingService:
                 draft,
                 payload,
                 attachments=attachments,
+                breaking=breaking,
                 status=PublicationStatus.SIMULATED,
                 reason="PUBLISH_MODE=DRY_RUN: ничего не отправлено",
             )
@@ -332,6 +338,7 @@ class PublishingService:
                 draft,
                 payload,
                 attachments=attachments,
+                breaking=breaking,
                 status=PublicationStatus.FAILED,
                 reason=str(exc),
             )
@@ -340,6 +347,7 @@ class PublishingService:
             draft,
             payload,
             attachments=attachments,
+                breaking=breaking,
             status=PublicationStatus.PUBLISHED,
             external_message_id=result.external_message_id,
         )
@@ -355,6 +363,7 @@ class PublishingService:
         external_message_id: str | None = None,
         attachments: list[dict] | None = None,
         topic_key: str | None = None,
+        breaking: bool = False,
     ) -> PublishOutcome:
         async with self._database.session() as session:
             publication = Publication(
@@ -363,6 +372,7 @@ class PublishingService:
                 status=status,
                 research_cluster_id=uuid.UUID(draft.cluster_id) if draft.cluster_id else None,
                 topic_key=topic_key,
+                is_breaking=breaking,
                 channel_ref=self._channel_ref or "-",
                 external_message_id=external_message_id,
                 text=draft.text,

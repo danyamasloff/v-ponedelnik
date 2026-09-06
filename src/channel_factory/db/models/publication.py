@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -52,6 +52,10 @@ class Publication(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # Own posts have no research cluster, so this is what says "already
     # published" for them. Null for everything driven by research.
     topic_key: Mapped[str | None] = mapped_column(String(160), nullable=True, index=True)
+
+    # Breaking posts jump the schedule and have their own daily ceiling, so the
+    # log has to remember which ones they were.
+    is_breaking: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     external_message_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
     text: Mapped[str] = mapped_column(Text, nullable=False)
