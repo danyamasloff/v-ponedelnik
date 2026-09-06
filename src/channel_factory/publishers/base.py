@@ -1,13 +1,18 @@
-"""Platform-agnostic publishing contract.
+"""Publisher contract.
 
-Only what every messenger shares lives here: what a post is made of and what
-publishing it returns. Everything MAX-specific (tokens, attachment payloads,
-rate limits) stays in :mod:`channel_factory.publishers.max`.
+A publisher knows one platform's API and nothing else: it does not decide
+whether something *should* be published, does not render text, and does not
+own the kill switch. That separation is what lets the same post be rehearsed
+and then sent through identical code.
+
+One request type describes a post for every platform, including its media:
+attachments are named as local files or image URLs here, and each publisher
+turns them into whatever its own API wants.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
@@ -16,8 +21,8 @@ from typing import Any, Protocol
 from channel_factory.core.enums import Platform
 
 
-class PublishError(RuntimeError):
-    """Base class for every publishing failure."""
+class PublishError(Exception):
+    """A platform refused or failed the request."""
 
 
 class PostValidationError(PublishError):
@@ -97,40 +102,55 @@ class MediaItem:
 
 
 @dataclass(frozen=True)
-class Post:
-    """What we want published, before any platform encoding."""
+class PublishRequest:
+    """One post, ready for a platform."""
 
-    text: str = ""
+    text: str
+    channel_ref: str = ""
     media: tuple[MediaItem, ...] = ()
     format: PostFormat = PostFormat.PLAIN
-    notify: bool = True
     disable_link_preview: bool = False
+    notify: bool = True
 
     def __post_init__(self) -> None:
         if not self.text.strip() and not self.media:
             raise PostValidationError("post has neither text nor media")
 
+    @property
+    def length(self) -> int:
+        return len(self.text)
+
 
 @dataclass(frozen=True)
 class PublishResult:
-    """Outcome of one publish attempt.
+    """What the platform said.
 
-    ``raw`` keeps the platform response as received: the same rule as for
-    market data — never throw the source payload away.
+    ``raw_response`` keeps the answer as received: the same rule as for market
+    data — never discard the payload the source gave us.
     """
 
-    platform: Platform
-    chat_id: int
-    message_id: str | None = None
+    external_message_id: str | None = None
+    raw_response: dict[str, Any] = field(default_factory=dict)
     url: str | None = None
     published_at: datetime | None = None
+    channel_ref: str | None = None
     dry_run: bool = False
-    raw: dict[str, Any] | None = None
 
 
 class Publisher(Protocol):
-    """What every platform adapter must provide."""
+    """Sends a prepared post to one platform."""
 
     platform: Platform
+    text_limit: int
 
-    async def publish(self, post: Post) -> PublishResult: ...
+    def validate(self, request: PublishRequest) -> list[str]:
+        """Return problems that would make this post fail or embarrass us."""
+        ...
+
+    def build_payload(self, request: PublishRequest) -> dict[str, Any]:
+        """The exact request that would be sent — the unit a dry run reviews."""
+        ...
+
+    async def publish(self, request: PublishRequest) -> PublishResult:
+        """Actually send the post."""
+        ...

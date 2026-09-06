@@ -9,13 +9,12 @@ from typing import Any
 import httpx
 import pytest
 
-from channel_factory.core.enums import Platform
 from channel_factory.publishers.base import (
     MediaItem,
     MediaKind,
-    Post,
     PostFormat,
     PostValidationError,
+    PublishRequest,
 )
 from channel_factory.publishers.max.adapter import MaxPublisher
 from channel_factory.publishers.max.client import TEXT_LIMIT, MaxApiClient
@@ -42,7 +41,7 @@ def refuse(request: httpx.Request) -> httpx.Response:  # pragma: no cover - must
 class TestPostValidation:
     def test_empty_post_is_rejected(self) -> None:
         with pytest.raises(PostValidationError):
-            Post(text="   ")
+            PublishRequest(channel_ref=str(CHAT_ID), text="   ")
 
     def test_media_item_needs_exactly_one_source(self) -> None:
         with pytest.raises(PostValidationError):
@@ -70,17 +69,62 @@ class TestPostValidation:
         client, publisher = make_publisher(refuse)
         try:
             with pytest.raises(PostValidationError) as exc_info:
-                await publisher.publish(Post(text="a" * (TEXT_LIMIT + 1)))
+                await publisher.publish(
+                    PublishRequest(channel_ref=str(CHAT_ID), text="a" * (TEXT_LIMIT + 1))
+                )
         finally:
             await client.aclose()
         assert str(TEXT_LIMIT) in str(exc_info.value)
+
+
+class TestValidation:
+    def _publisher(self) -> MaxPublisher:
+        return MaxPublisher(
+            MaxApiClient("test-token", transport=httpx.MockTransport(refuse)), CHAT_ID
+        )
+
+    def test_placeholder_left_in_the_text_is_refused(self) -> None:
+        problems = self._publisher().validate(
+            PublishRequest(channel_ref=str(CHAT_ID), text="Заголовок\n[TODO PHASE 5: разбор]")
+        )
+        assert any("заготовки" in problem for problem in problems)
+
+    def test_text_over_the_limit_is_refused(self) -> None:
+        problems = self._publisher().validate(
+            PublishRequest(channel_ref=str(CHAT_ID), text="a" * (TEXT_LIMIT + 1))
+        )
+        assert any(str(TEXT_LIMIT) in problem for problem in problems)
+
+    def test_non_numeric_channel_is_refused(self) -> None:
+        problems = self._publisher().validate(PublishRequest(channel_ref="@my_channel", text="hi"))
+        assert any("числом" in problem for problem in problems)
+
+    def test_missing_media_file_is_refused(self, tmp_path: Path) -> None:
+        problems = self._publisher().validate(
+            PublishRequest(
+                channel_ref=str(CHAT_ID),
+                text="hi",
+                media=(MediaItem.from_path(tmp_path / "gone.png"),),
+            )
+        )
+        assert any("не найден" in problem for problem in problems)
+
+    def test_a_good_post_has_no_problems(self) -> None:
+        assert (
+            self._publisher().validate(
+                PublishRequest(channel_ref=str(CHAT_ID), text="нормальный текст")
+            )
+            == []
+        )
 
 
 class TestBuildBody:
     async def test_plain_post_omits_the_format_field(self) -> None:
         client, publisher = make_publisher(refuse)
         try:
-            body = await publisher.build_body(Post(text="привет"))
+            body = await publisher.build_body(
+                PublishRequest(channel_ref=str(CHAT_ID), text="привет")
+            )
         finally:
             await client.aclose()
         assert body == {"text": "привет", "notify": True}
@@ -89,7 +133,12 @@ class TestBuildBody:
         client, publisher = make_publisher(refuse)
         try:
             body = await publisher.build_body(
-                Post(text="*bold*", format=PostFormat.MARKDOWN, notify=False)
+                PublishRequest(
+                    channel_ref=str(CHAT_ID),
+                    text="*bold*",
+                    format=PostFormat.MARKDOWN,
+                    notify=False,
+                )
             )
         finally:
             await client.aclose()
@@ -108,7 +157,11 @@ class TestBuildBody:
         client, publisher = make_publisher(handler)
         try:
             body = await publisher.build_body(
-                Post(text="с картинкой", media=(MediaItem.from_path(image),))
+                PublishRequest(
+                    channel_ref=str(CHAT_ID),
+                    text="с картинкой",
+                    media=(MediaItem.from_path(image),),
+                )
             )
         finally:
             await client.aclose()
@@ -128,43 +181,53 @@ class TestPublish:
         }
         client, publisher = make_publisher(lambda request: httpx.Response(200, json=response))
         try:
-            result = await publisher.publish(Post(text="hi"))
+            result = await publisher.publish(PublishRequest(channel_ref=str(CHAT_ID), text="hi"))
         finally:
             await client.aclose()
 
-        assert result.platform is Platform.MAX
-        assert result.chat_id == CHAT_ID
-        assert result.message_id == "mid-42"
+        assert result.channel_ref == str(CHAT_ID)
+        assert result.external_message_id == "mid-42"
         assert result.url == "https://max.ru/post/1"
         assert result.published_at is not None
         assert result.published_at.year == 2025
-        assert result.raw == response
+        assert result.raw_response == response
 
     async def test_result_survives_a_response_without_a_message_id(self) -> None:
         client, publisher = make_publisher(lambda request: httpx.Response(200, json={}))
         try:
-            result = await publisher.publish(Post(text="hi"))
+            result = await publisher.publish(PublishRequest(channel_ref=str(CHAT_ID), text="hi"))
         finally:
             await client.aclose()
-        assert result.message_id is None
-        assert result.raw == {}
+        assert result.external_message_id is None
+        assert result.raw_response == {}
 
-    async def test_dry_run_sends_nothing(self, tmp_path: Path) -> None:
+    async def test_payload_is_built_without_uploading_or_leaking_the_token(
+        self, tmp_path: Path
+    ) -> None:
+        """The rehearsal payload must be safe to store and must send nothing.
+
+        Obtaining an attachment token means actually uploading the file, so a
+        rehearsal shows the media as a descriptor instead.
+        """
         image = tmp_path / "cover.png"
         image.write_bytes(b"binary")
-        client, publisher = make_publisher(refuse, dry_run=True)
+        client, publisher = make_publisher(refuse)
         try:
-            result = await publisher.publish(
-                Post(text="черновик", media=(MediaItem.from_path(image),))
+            payload = publisher.build_payload(
+                PublishRequest(
+                    channel_ref=str(CHAT_ID),
+                    text="черновик",
+                    media=(MediaItem.from_path(image),),
+                )
             )
         finally:
             await client.aclose()
 
-        assert result.dry_run is True
-        assert result.message_id is None
-        assert result.raw is not None
-        assert result.raw["request_body"]["text"] == "черновик"
-        assert result.raw["request_body"]["attachments"][0]["type"] == "image"
+        assert payload["body"]["text"] == "черновик"
+        assert payload["body"]["attachments"][0]["type"] == "image"
+        assert payload["body"]["attachments"][0]["payload"]["source"] == str(image)
+        assert payload["headers"]["Authorization"] == "<MAX_BOT_TOKEN>"
+        assert "test-token" not in json.dumps(payload)
 
     async def test_retries_while_the_attachment_is_still_processing(self, tmp_path: Path) -> None:
         video = tmp_path / "clip.mp4"
@@ -185,13 +248,15 @@ class TestPublish:
         client, publisher = make_publisher(handler)
         try:
             result = await publisher.publish(
-                Post(text="видео", media=(MediaItem.from_path(video),))
+                PublishRequest(
+                    channel_ref=str(CHAT_ID), text="видео", media=(MediaItem.from_path(video),)
+                )
             )
         finally:
             await client.aclose()
 
         assert sends == 2
-        assert result.message_id == "mid-1"
+        assert result.external_message_id == "mid-1"
 
     async def test_other_errors_are_not_retried(self) -> None:
         sends = 0
@@ -204,7 +269,7 @@ class TestPublish:
         client, publisher = make_publisher(handler)
         try:
             with pytest.raises(MaxApiError):
-                await publisher.publish(Post(text="hi"))
+                await publisher.publish(PublishRequest(channel_ref=str(CHAT_ID), text="hi"))
         finally:
             await client.aclose()
 
@@ -221,14 +286,16 @@ class TestEditAndDelete:
 
         client, publisher = make_publisher(handler)
         try:
-            result = await publisher.edit("mid-1", Post(text="новый текст"))
+            result = await publisher.edit(
+                "mid-1", PublishRequest(channel_ref=str(CHAT_ID), text="новый текст")
+            )
         finally:
             await client.aclose()
 
         assert seen[0].method == "PUT"
         assert seen[0].url.params["message_id"] == "mid-1"
         assert json.loads(seen[0].content)["text"] == "новый текст"
-        assert result.message_id == "mid-1"
+        assert result.external_message_id == "mid-1"
 
     async def test_unsuccessful_edit_raises(self) -> None:
         client, publisher = make_publisher(
@@ -236,7 +303,9 @@ class TestEditAndDelete:
         )
         try:
             with pytest.raises(MaxApiError) as exc_info:
-                await publisher.edit("mid-1", Post(text="новый текст"))
+                await publisher.edit(
+                    "mid-1", PublishRequest(channel_ref=str(CHAT_ID), text="новый текст")
+                )
         finally:
             await client.aclose()
         assert "too old" in str(exc_info.value)
@@ -256,13 +325,6 @@ class TestEditAndDelete:
 
         assert seen[0].method == "DELETE"
         assert seen[0].url.params["message_id"] == "mid-1"
-
-    async def test_delete_in_dry_run_sends_nothing(self) -> None:
-        client, publisher = make_publisher(refuse, dry_run=True)
-        try:
-            await publisher.delete("mid-1")
-        finally:
-            await client.aclose()
 
 
 class TestPreflight:

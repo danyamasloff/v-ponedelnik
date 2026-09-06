@@ -13,6 +13,8 @@ from channel_factory.cli.app import app
 from channel_factory.core.config import PROJECT_ROOT, get_settings, masked_database_url
 from channel_factory.core.logging import setup_logging
 from channel_factory.db.models import (
+    AiGeneration,
+    CompetitorWatch,
     DirectImport,
     DirectImportRow,
     MarketChannel,
@@ -20,7 +22,11 @@ from channel_factory.db.models import (
     Niche,
     NicheScore,
     NicheScoreRun,
+    ResearchCluster,
+    ResearchItem,
+    ResearchSource,
     Source,
+    TopicScore,
 )
 from channel_factory.db.session import Database
 
@@ -33,6 +39,12 @@ COUNTED_MODELS = (
     MarketSnapshot,
     NicheScoreRun,
     NicheScore,
+    CompetitorWatch,
+    ResearchSource,
+    ResearchItem,
+    ResearchCluster,
+    TopicScore,
+    AiGeneration,
 )
 
 

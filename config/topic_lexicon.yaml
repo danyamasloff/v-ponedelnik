@@ -1,0 +1,158 @@
+# Deterministic lexicon for the relevance and practical-value components.
+#
+# Why this exists: without it those two components need an LLM, and without an
+# LLM the score answers only "is it fresh and official" — which is true of
+# almost everything in a curated whitelist. A lexicon is a heuristic, not
+# judgement, but it separates "how to train ChatGPT to write like you" from
+# "OpenAI announces a partnership" at zero cost and with a visible reason.
+#
+# Scoring is additive from a neutral base, each term counted once, result
+# clamped to 0-100. Matched terms are stored with the score, so `show-cluster`
+# can say which words produced the number.
+#
+# Terms are matched on normalized text (lowercase, "ё" -> "е"), so write them
+# in lower case. Prefixes are enough: "автоматизац" catches all endings.
+version: 1
+
+relevance:
+  base: 40
+  max_positive: 60
+  max_negative: 55
+
+  # Signals that this is about applying AI and digital tools.
+  positive:
+    # AI tools by name
+    chatgpt: 14
+    claude: 14
+    gemini: 14
+    copilot: 14
+    perplexity: 10
+    midjourney: 10
+    нейросет: 12
+    промпт: 14
+    prompt: 10
+    llm: 8
+    ai agent: 10
+    ai-агент: 10
+
+    # Applying things at work
+    workflow: 12
+    автоматизац: 14
+    automation: 12
+    интеграц: 8
+    integration: 6
+    shortcut: 10
+    горячие клавиши: 12
+    расширени: 6
+    extension: 6
+    плагин: 8
+    надстройк: 8
+    скрипт: 6
+
+    # Everyday office and study tools
+    excel: 14
+    spreadsheet: 12
+    таблиц: 8
+    powerpoint: 12
+    презентац: 10
+    notion: 10
+    obsidian: 8
+    заметк: 6
+    календар: 6
+    документ: 5
+    перевод: 5
+
+    # Teaching shape. Naming a tool *and* promising instruction is as close to
+    # the centre of this niche as a headline gets, so the two together should
+    # clear 70 on their own.
+    how to: 18
+    how-to: 18
+    "как ": 10
+    guide: 10
+    гайд: 12
+    tutorial: 12
+    инструкци: 12
+    разбор: 10
+    tips: 10
+    советы: 10
+    шпаргалк: 12
+    чек-лист: 10
+    checklist: 10
+    пошагов: 12
+    step-by-step: 12
+    шаблон: 10
+    template: 8
+
+  # Signals that this is industry news rather than something to apply.
+  negative:
+    раунд финансирован: 30
+    инвестиц: 22
+    funding: 25
+    valuation: 25
+    ipo: 25
+    acquisition: 22
+    приобрет: 12
+    партнерств: 20
+    partnership: 20
+    earnings: 25
+    выручк: 22
+    revenue: 18
+    share price: 25
+    назначен: 15
+    appoints: 20
+    steps down: 20
+    resigns: 20
+    увольн: 18
+    layoffs: 22
+    lawsuit: 22
+    иск против: 22
+    антимонопол: 20
+    regulation: 12
+    регулятор: 12
+    hiring: 15
+    ваканси: 18
+
+practical_value:
+  base: 35
+  max_bonus: 65
+
+  # A title that promises an action is the strongest signal we can read
+  # without a model.
+  patterns:
+    how to: 30
+    how-to: 30
+    "как ": 22
+    guide: 20
+    гайд: 24
+    tutorial: 26
+    инструкци: 24
+    пошагов: 26
+    step-by-step: 26
+    tips: 20
+    советы: 20
+    шпаргалк: 26
+    чек-лист: 22
+    checklist: 22
+    разбор: 18
+    шаблон: 22
+    template: 18
+    промпт: 24
+    workflow: 20
+    автоматизац: 22
+    shortcut: 22
+    настро: 12
+    setup: 12
+
+  # A release you can go and use is more actionable than commentary, but far
+  # less actionable than an explicit instruction.
+  event_type_bonus:
+    RELEASE: 12
+    UPDATE: 10
+    NEW_TOOL: 16
+    GUIDE: 25
+    RESEARCH: 0
+    INCIDENT: 0
+    OTHER: 0
+
+  # A concrete version number usually means a concrete, checkable change.
+  version_bonus: 8

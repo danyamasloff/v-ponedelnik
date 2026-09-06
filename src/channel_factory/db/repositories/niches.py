@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from channel_factory.core.enums import Platform
 from channel_factory.db.models import Niche, NicheScore, NicheScoreRun
 
 
@@ -18,9 +19,26 @@ class NicheScoreRepository:
     def add_run(self, run: NicheScoreRun) -> None:
         self._session.add(run)
 
-    async def latest_run(self, *, score_version: str | None = None) -> NicheScoreRun | None:
-        """Most recent run, optionally restricted to one formula version."""
+    async def latest_run(
+        self,
+        *,
+        platform: Platform | None = None,
+        any_scope: bool = False,
+        score_version: str | None = None,
+    ) -> NicheScoreRun | None:
+        """Most recent run for a scope.
+
+        By default the run for ``platform`` is returned, where ``None`` means the
+        all-platforms run — not "any run". Pass ``any_scope=True`` to ignore the
+        scope entirely.
+        """
         query = select(NicheScoreRun).order_by(NicheScoreRun.created_at.desc()).limit(1)
+        if not any_scope:
+            query = query.where(
+                NicheScoreRun.platform.is_(None)
+                if platform is None
+                else NicheScoreRun.platform == platform
+            )
         if score_version:
             query = query.where(NicheScoreRun.score_version == score_version)
         return (await self._session.execute(query)).scalar_one_or_none()

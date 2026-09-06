@@ -69,14 +69,23 @@ def _is_empty(value: Any) -> bool:
 
 
 def _find_header_index(rows: list[list[Any]]) -> int:
-    """Index of the first row that looks like a header row."""
-    for index, row in enumerate(rows[:MAX_HEADER_SCAN_ROWS]):
-        if sum(not _is_empty(cell) for cell in row) >= MIN_HEADER_CELLS:
-            return index
-    raise SourceFileError(
-        f"no header row found in the first {MAX_HEADER_SCAN_ROWS} rows "
-        f"(a header needs at least {MIN_HEADER_CELLS} non-empty cells)"
-    )
+    """Index of the row that looks like the header row.
+
+    Real Yandex Direct exports start with a summary block of ``label / value``
+    pairs before the table, so "first row with two non-empty cells" picks the
+    summary instead of the header. The header of a table is the widest row, so
+    the widest row in the scan window wins; ties go to the earliest row, which
+    keeps files whose first row is already the header working unchanged.
+    """
+    window = rows[:MAX_HEADER_SCAN_ROWS]
+    widths = [sum(not _is_empty(cell) for cell in row) for row in window]
+    widest = max(widths, default=0)
+    if widest < MIN_HEADER_CELLS:
+        raise SourceFileError(
+            f"no header row found in the first {MAX_HEADER_SCAN_ROWS} rows "
+            f"(a header needs at least {MIN_HEADER_CELLS} non-empty cells)"
+        )
+    return widths.index(widest)
 
 
 def _build_table(

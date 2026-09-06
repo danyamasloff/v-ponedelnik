@@ -23,6 +23,9 @@ from channel_factory.db.models import Niche, NicheScore, NicheScoreRun
 MARKET_OVERVIEW_FILE = "market-overview.md"
 NICHE_RANKING_FILE = "niche-ranking.md"
 NICHE_RANKING_CSV = "niche-ranking.csv"
+CROSS_PLATFORM_FILE = "cross-platform-niches.md"
+
+PLATFORM_LABELS = {"TELEGRAM": "Telegram", "MAX": "MAX"}
 
 # Component order in reports: data-derived first, subjective after, so a reader
 # sees what the market said before what we assumed.
@@ -113,6 +116,18 @@ def _score(value: float | None) -> str:
     return "—" if value is None else f"{value:.1f}"
 
 
+def scope_label(run: NicheScoreRun) -> str:
+    """Human-readable scope of a run."""
+    if run.platform is None:
+        return "все платформы"
+    return PLATFORM_LABELS.get(run.platform.value, run.platform.value)
+
+
+def report_suffix(run: NicheScoreRun) -> str:
+    """Filename suffix so platform reports never overwrite the overall ones."""
+    return "" if run.platform is None else f"-{run.platform.value.lower()}"
+
+
 def _dataset_header(run: NicheScoreRun) -> list[str]:
     data = run.dataset or {}
     sources = data.get("sources") or []
@@ -120,6 +135,7 @@ def _dataset_header(run: NicheScoreRun) -> list[str]:
     lines = [
         f"- Прогон: `{run.id}` от {run.created_at:%Y-%m-%d %H:%M} UTC",
         f"- Версия формулы: `{run.score_version}`",
+        f"- Охват: **{scope_label(run)}**",
         f"- Источники данных: {', '.join(sources) if sources else '—'}",
         f"- Каналов в базе: {data.get('channels', 0)} "
         f"(без категории: {data.get('channels_without_niche', 0)})",
@@ -189,7 +205,7 @@ def _caveats(run: NicheScoreRun, rows: list[ReportRow]) -> list[str]:
 def render_market_overview(run: NicheScoreRun, rows: list[ReportRow]) -> str:
     """Market statistics per niche, without any scoring."""
     lines = [
-        "# Обзор рынка",
+        f"# Обзор рынка — {scope_label(run)}",
         "",
         f"Сгенерировано: {datetime.now(UTC):%Y-%m-%d %H:%M} UTC",
         "",
@@ -233,7 +249,7 @@ def render_niche_ranking(run: NicheScoreRun, rows: list[ReportRow]) -> str:
     """Ranked niches with the full component breakdown."""
     scored = [row for row in rows if row.score is not None]
     lines = [
-        "# Ранжирование ниш",
+        f"# Ранжирование ниш — {scope_label(run)}",
         "",
         f"Сгенерировано: {datetime.now(UTC):%Y-%m-%d %H:%M} UTC",
         "",
@@ -360,12 +376,22 @@ def render_ranking_csv(run: NicheScoreRun, rows: list[ReportRow]) -> str:
 
 
 def write_reports(directory: Path, run: NicheScoreRun, rows: list[ReportRow]) -> list[Path]:
-    """Write all report files, returning the paths written."""
+    """Write all report files, returning the paths written.
+
+    Platform-scoped runs get a filename suffix so a Telegram ranking never
+    overwrites the overall one.
+    """
     directory.mkdir(parents=True, exist_ok=True)
+    suffix = report_suffix(run)
+
+    def named(filename: str) -> str:
+        stem, _, extension = filename.rpartition(".")
+        return f"{stem}{suffix}.{extension}"
+
     files = {
-        MARKET_OVERVIEW_FILE: render_market_overview(run, rows),
-        NICHE_RANKING_FILE: render_niche_ranking(run, rows),
-        NICHE_RANKING_CSV: render_ranking_csv(run, rows),
+        named(MARKET_OVERVIEW_FILE): render_market_overview(run, rows),
+        named(NICHE_RANKING_FILE): render_niche_ranking(run, rows),
+        named(NICHE_RANKING_CSV): render_ranking_csv(run, rows),
     }
     written: list[Path] = []
     for name, content in files.items():

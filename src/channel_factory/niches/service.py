@@ -8,6 +8,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Any
 
+from channel_factory.core.enums import Platform
 from channel_factory.core.logging import get_logger
 from channel_factory.db.models import NicheScore, NicheScoreRun
 from channel_factory.db.repositories.niches import NicheScoreRepository
@@ -74,6 +75,7 @@ class AnalysisOutcome:
     dataset: DatasetSummary
     results: list[NicheScoreResult]
     as_of: date | None = None
+    platform: Platform | None = None
     run_id: uuid.UUID | None = None
     persisted: bool = False
     # Below this many scored niches, percentile ranking is coarse and the
@@ -109,12 +111,21 @@ class NicheAnalysisService:
         self._config = config
 
     async def analyze(
-        self, *, as_of: date | None = None, persist: bool = True
+        self,
+        *,
+        as_of: date | None = None,
+        persist: bool = True,
+        platform: Platform | None = None,
     ) -> AnalysisOutcome:
-        """Aggregate the market, score every niche and (optionally) store the run."""
+        """Aggregate the market, score every niche and (optionally) store the run.
+
+        ``platform`` scopes the whole analysis to one messenger. Percentile ranks
+        are then computed inside that platform, which is what makes a Telegram
+        ranking and a MAX ranking independently meaningful.
+        """
         async with self._database.session() as session:
             stats = MarketStatisticsRepository(session)
-            dataset = await stats.dataset_summary()
+            dataset = await stats.dataset_summary(platform=platform)
             if dataset.is_empty:
                 logger.info("niche analysis: no market data available")
                 return AnalysisOutcome(
@@ -122,10 +133,13 @@ class NicheAnalysisService:
                     dataset=dataset,
                     results=[],
                     as_of=as_of,
+                    platform=platform,
                 )
 
             metrics = await stats.niche_metrics(
-                as_of=as_of, top_n=self._config.top_channels_for_concentration
+                as_of=as_of,
+                top_n=self._config.top_channels_for_concentration,
+                platform=platform,
             )
 
         results = score_niches(metrics, self._config)
@@ -134,6 +148,7 @@ class NicheAnalysisService:
             dataset=dataset,
             results=results,
             as_of=as_of,
+            platform=platform,
             low_confidence_threshold=self._config.low_confidence_niche_count,
         )
 
@@ -145,6 +160,7 @@ class NicheAnalysisService:
             "niche analysis finished",
             extra={
                 "score_version": outcome.score_version,
+                "platform": outcome.platform.value if outcome.platform else "ALL",
                 "niches_scored": len(outcome.scored),
                 "niches_skipped": len(outcome.skipped),
                 "persisted": outcome.persisted,
@@ -157,6 +173,7 @@ class NicheAnalysisService:
         async with self._database.session() as session:
             run = NicheScoreRun(
                 score_version=outcome.score_version,
+                platform=outcome.platform,
                 as_of_date=outcome.as_of,
                 niches_scored=len(outcome.scored),
                 niches_skipped=len(outcome.skipped),

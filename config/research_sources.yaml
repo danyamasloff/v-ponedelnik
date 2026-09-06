@@ -1,0 +1,231 @@
+# Research source whitelist for the niche
+# "практические AI и цифровые навыки для работы, учёбы и повседневных задач".
+#
+# Every feed URL here was verified to return parseable RSS/Atom before being
+# added. Sources are never added "for volume": each one has a stated reason.
+#
+# trust levels (see docs/research-engine.md):
+#   OFFICIAL             — the vendor's own site / changelog / repository
+#   PRIMARY              — first-hand source (official forum announcement, paper)
+#   REPUTABLE_SECONDARY  — edited publication
+#   AGGREGATOR           — reposts and roundups
+#   UNKNOWN              — unresolved domain (LLM search results start here)
+version: 1
+
+defaults:
+  poll_interval_minutes: 60
+  enabled: true
+
+sources:
+  # ---------- Official vendor pages without a usable feed ----------
+  # OpenAI and Anthropic publish no working RSS. Their robots.txt allows
+  # crawling (Allow: /) and the pages need no login, so a narrow whitelist
+  # reader is used — not a general web scraper.
+  # Disabled after the first real poll: openai.com/news answers automated
+  # requests with HTTP 403 even though its robots.txt allows crawling. We do
+  # not work around bot protection, so OpenAI is covered by the announcements
+  # feed and the SDK releases below instead.
+  - key: openai-news
+    name: OpenAI News
+    provider: OFFICIAL_BLOG
+    url: https://openai.com/news/
+    trust: OFFICIAL
+    enabled: false
+    poll_interval_minutes: 90
+    reason: Первоисточник релизов OpenAI, но отдаёт 403 на автоматические запросы.
+
+  - key: anthropic-news
+    name: Anthropic News
+    provider: OFFICIAL_BLOG
+    url: https://www.anthropic.com/news
+    trust: OFFICIAL
+    poll_interval_minutes: 90
+    reason: Первоисточник релизов Anthropic.
+
+  # Disabled after the first real poll: the /blog listing mixes official posts
+  # with community forum threads, whose link text arrives as
+  # "Title author • 3 days ago • 19". Cleaning that up would mean per-site
+  # extraction rules inside the generic reader, which is exactly what this
+  # provider must not grow. Re-enable with a dedicated adapter.
+  - key: huggingface-blog
+    name: Hugging Face Blog
+    provider: OFFICIAL_BLOG
+    url: https://huggingface.co/blog
+    trust: OFFICIAL
+    enabled: false
+    poll_interval_minutes: 180
+    reason: Модели и прикладные гайды, но листинг смешан с форумными постами.
+
+  # ---------- RSS / Atom ----------
+  - key: openai-announcements
+    name: OpenAI Announcements
+    provider: RSS
+    url: https://community.openai.com/c/announcements/6.rss
+    trust: PRIMARY
+    reason: Официальные анонсы API OpenAI с рабочим фидом.
+
+  - key: google-ai
+    name: Google AI Blog
+    provider: RSS
+    url: https://blog.google/technology/ai/rss/
+    trust: OFFICIAL
+    reason: Релизы и обновления AI-продуктов Google.
+
+  - key: google-gemini
+    name: Google Gemini Blog
+    provider: RSS
+    url: https://blog.google/products/gemini/rss/
+    trust: OFFICIAL
+    reason: Продуктовые обновления Gemini — прямая польза для аудитории.
+
+  - key: google-deepmind
+    name: Google DeepMind
+    provider: RSS
+    url: https://deepmind.google/blog/rss.xml
+    trust: OFFICIAL
+    poll_interval_minutes: 180
+    reason: Новые модели и исследования.
+
+  - key: microsoft-365
+    name: Microsoft 365 Blog
+    provider: RSS
+    url: https://www.microsoft.com/en-us/microsoft-365/blog/feed/
+    trust: OFFICIAL
+    reason: Copilot в офисных задачах — ядро ниши «AI для работы».
+
+  - key: microsoft-copilot
+    name: Microsoft Copilot Blog
+    provider: RSS
+    url: https://www.microsoft.com/en-us/microsoft-copilot/blog/feed/
+    trust: OFFICIAL
+    reason: Прикладные сценарии Copilot.
+
+  - key: github-blog
+    name: GitHub Blog
+    provider: RSS
+    url: https://github.blog/feed/
+    trust: OFFICIAL
+    reason: Продуктовые новости GitHub и Copilot.
+
+  - key: github-changelog
+    name: GitHub Changelog
+    provider: RSS
+    url: https://github.blog/changelog/feed/
+    trust: OFFICIAL
+    poll_interval_minutes: 30
+    reason: Мелкие функции — идеальный материал для формата QUICK_TIP.
+
+  - key: cursor-changelog
+    name: Cursor Changelog
+    provider: RSS
+    url: https://cursor.com/changelog/rss.xml
+    trust: OFFICIAL
+    reason: AI-редактор кода, популярный у аудитории «AI для работы».
+
+  - key: notion-releases
+    name: Notion Releases
+    provider: RSS
+    url: https://www.notion.so/releases/rss.xml
+    trust: OFFICIAL
+    reason: Продуктивность и Notion AI.
+
+  - key: zapier-blog
+    name: Zapier Blog
+    provider: RSS
+    url: https://zapier.com/blog/feeds/latest/
+    trust: OFFICIAL
+    poll_interval_minutes: 180
+    reason: Автоматизация рутины — прямое попадание в позиционирование.
+
+  - key: ollama-blog
+    name: Ollama Blog
+    provider: RSS
+    url: https://ollama.com/blog/rss.xml
+    trust: OFFICIAL
+    poll_interval_minutes: 180
+    reason: Локальный запуск моделей, востребованная практическая тема.
+
+  - key: vscode-updates
+    name: VS Code Updates
+    provider: RSS
+    url: https://code.visualstudio.com/feed.xml
+    trust: OFFICIAL
+    poll_interval_minutes: 180
+    reason: Инструменты разработчика и AI-интеграции.
+
+  - key: microsoft-devblogs
+    name: Microsoft Dev Blogs
+    provider: RSS
+    url: https://devblogs.microsoft.com/feed/
+    trust: OFFICIAL
+    poll_interval_minutes: 180
+    reason: Практические технические материалы Microsoft.
+
+  - key: simonwillison
+    name: Simon Willison
+    provider: RSS
+    url: https://simonwillison.net/atom/everything/
+    trust: REPUTABLE_SECONDARY
+    reason: Один из лучших источников прикладных разборов AI-инструментов.
+
+  - key: stackoverflow-blog
+    name: Stack Overflow Blog
+    provider: RSS
+    url: https://stackoverflow.blog/feed/
+    trust: REPUTABLE_SECONDARY
+    poll_interval_minutes: 240
+    reason: Инструменты и практики разработчиков, данные опросов.
+
+  - key: arstechnica-ai
+    name: Ars Technica AI
+    provider: RSS
+    url: https://arstechnica.com/ai/feed/
+    trust: REPUTABLE_SECONDARY
+    poll_interval_minutes: 120
+    reason: Качественная редакция; используется как подтверждающий источник.
+
+  # ---------- GitHub Releases ----------
+  - key: gh-openai-python
+    name: openai/openai-python
+    provider: GITHUB_RELEASES
+    repo: openai/openai-python
+    trust: OFFICIAL
+    poll_interval_minutes: 240
+    reason: Изменения API OpenAI видны в release notes раньше, чем в блоге.
+
+  - key: gh-anthropic-sdk-python
+    name: anthropics/anthropic-sdk-python
+    provider: GITHUB_RELEASES
+    repo: anthropics/anthropic-sdk-python
+    trust: OFFICIAL
+    poll_interval_minutes: 240
+    reason: То же для Anthropic API.
+
+  - key: gh-n8n
+    name: n8n-io/n8n
+    provider: GITHUB_RELEASES
+    repo: n8n-io/n8n
+    trust: OFFICIAL
+    poll_interval_minutes: 240
+    reason: Автоматизация рабочих процессов; у блога n8n нет валидного фида.
+
+  # ---------- LLM search scout ----------
+  # Catches what feeds miss. Results start at UNKNOWN trust and are promoted
+  # only when their domain resolves to a whitelisted source.
+  - key: ai-trend-scout
+    name: AI Trend Scout
+    provider: LLM_SEARCH
+    trust: UNKNOWN
+    poll_interval_minutes: 720
+    config:
+      queries:
+        - "новые возможности AI-инструментов для повседневной работы за последнюю неделю"
+        - "practical AI workflow releases and updates this week"
+        - "new productivity automation tools released this week"
+      max_results_per_query: 8
+    reason: Покрывает источники вне whitelist; всегда требует подтверждения.
+
+# Deliberately excluded (do not re-add without solving the stated problem):
+#   perplexity.ai/blog  — HTTP 403 for automated requests; we do not bypass.
+#   canva.com/newsroom  — HTTP 403, same reason.
+#   blog.n8n.io, blog.langchain.com, blog.replit.com — no valid feed served.

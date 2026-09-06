@@ -59,25 +59,27 @@ def resolve_chat_id(chat_id: int | None, settings: Settings | None = None) -> in
 def build_publisher(
     *,
     chat_id: int | None = None,
-    dry_run: bool = False,
+    rehearsal: bool = False,
     settings: Settings | None = None,
 ) -> tuple[MaxApiClient, MaxPublisher]:
-    """Client plus publisher; the caller owns closing the client."""
+    """Client plus publisher; the caller owns closing the client.
+
+    ``rehearsal`` is for flows that will not send anything (a dry run, a
+    preview). They must not demand a token or a channel id: the point is to
+    look at the post before anything is configured, and the placeholder client
+    is closed unused.
+    """
     settings = settings or get_settings()
-    if dry_run:
-        # A dry run never reaches the network, so it must not demand a token or
-        # a channel: the whole point is to look at the post before anything is
-        # set up. The placeholder client is closed unused.
+    if rehearsal and (settings.max_bot_token is None or settings.max_chat_id is None):
         token = settings.max_bot_token.get_secret_value() if settings.max_bot_token else "dry-run"
-        target = chat_id if chat_id is not None else (settings.max_chat_id or 0)
         client = MaxApiClient(
             token,
             base_url=settings.max_api_base_url,
             timeout=settings.max_request_timeout,
             ca_bundle=_ca_bundle(settings),
         )
-        return client, MaxPublisher(client, target, dry_run=True)
+        target = chat_id if chat_id is not None else settings.max_chat_id
+        return client, MaxPublisher(client, target)
 
     client = build_client(settings)
-    publisher = MaxPublisher(client, resolve_chat_id(chat_id, settings))
-    return client, publisher
+    return client, MaxPublisher(client, resolve_chat_id(chat_id, settings))

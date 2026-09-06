@@ -1,4 +1,8 @@
-"""MAX publishing commands.
+"""MAX operator commands: connection, channel discovery, manual posting.
+
+These are the hands-on tools for working with the channel directly. The
+autonomous path — research topic to published post, with the kill switch and
+the publication log — lives in :mod:`channel_factory.cli.publish`.
 
 Every command talks to the MAX Bot API, which is free: no paid plan is needed
 to create a bot or to post into a channel it administers.
@@ -19,9 +23,9 @@ from channel_factory.core.config import get_settings
 from channel_factory.core.logging import setup_logging
 from channel_factory.publishers.base import (
     MediaItem,
-    Post,
     PostFormat,
     PublishError,
+    PublishRequest,
     PublishResult,
 )
 from channel_factory.publishers.max.adapter import MaxPreflight
@@ -123,43 +127,55 @@ def max_post(
     ),
     yes: bool = typer.Option(False, "--yes", "-y", help="Do not ask for confirmation"),
 ) -> None:
-    """Publish a post into a MAX channel."""
-    post = _build_post(
+    """Publish a post into a MAX channel by hand."""
+    target = _target(chat_id, rehearsal=dry_run)
+    request = _build_request(
         text=text,
         text_file=text_file,
+        chat_ref=str(target) if target is not None else "",
         media=media,
         image_urls=image_url,
         text_format=text_format,
         silent=silent,
         no_link_preview=no_link_preview,
     )
-    # A dry run is allowed before anything is configured; a real post is not.
-    target = (
-        (chat_id if chat_id is not None else get_settings().max_chat_id)
-        if dry_run
-        else resolve_chat_id(chat_id)
-    )
 
-    _print_post_preview(post, target, dry_run=dry_run)
-    if not dry_run and not yes and not typer.confirm("Publish this post now?", default=False):
+    _print_post_preview(request, target, dry_run=dry_run)
+    if dry_run:
+        _run(lambda: _show_payload(request, target))
+        return
+    if not yes and not typer.confirm("Publish this post now?", default=False):
         typer.secho("Cancelled — nothing was published.", fg=typer.colors.YELLOW)
         raise typer.Exit(code=1)
 
-    result = _run(lambda: _publish(post, target, dry_run=dry_run, skip_check=skip_check))
+    result = _run(lambda: _publish(request, target, skip_check=skip_check))
     _print_result(result)
 
 
-async def _publish(
-    post: Post, chat_id: int | None, *, dry_run: bool, skip_check: bool
-) -> PublishResult:
-    client, publisher = build_publisher(chat_id=chat_id, dry_run=dry_run)
+async def _show_payload(request: PublishRequest, target: int | None) -> None:
+    """Render the request without touching the network."""
+    client, publisher = build_publisher(chat_id=target, rehearsal=True)
     try:
-        if not dry_run and not skip_check:
+        for problem in publisher.validate(request):
+            typer.secho(f"  ! {problem}", fg=typer.colors.YELLOW)
+        payload = publisher.build_payload(request)
+        typer.secho("Dry run  : request built, nothing sent.", fg=typer.colors.YELLOW)
+        typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+    finally:
+        await client.aclose()
+
+
+async def _publish(
+    request: PublishRequest, chat_id: int | None, *, skip_check: bool
+) -> PublishResult:
+    client, publisher = build_publisher(chat_id=chat_id)
+    try:
+        if not skip_check:
             preflight = await publisher.preflight()
             if not preflight.ok:
                 _print_preflight(preflight)
                 raise PublishError("preflight failed — nothing was published")
-        return await publisher.publish(post)
+        return await publisher.publish(request)
     finally:
         await client.aclose()
 
@@ -176,29 +192,30 @@ def max_edit_post(
     yes: bool = typer.Option(False, "--yes", "-y", help="Do not ask for confirmation"),
 ) -> None:
     """Replace the text of a post the bot published earlier."""
-    post = _build_post(
+    target = resolve_chat_id(chat_id)
+    request = _build_request(
         text=text,
         text_file=text_file,
+        chat_ref=str(target),
         media=[],
         image_urls=[],
         text_format=text_format,
         silent=False,
         no_link_preview=False,
     )
-    target = resolve_chat_id(chat_id)
-    _print_post_preview(post, target, dry_run=False)
+    _print_post_preview(request, target, dry_run=False)
     if not yes and not typer.confirm(f"Replace post {message_id}?", default=False):
         typer.secho("Cancelled — the post was left unchanged.", fg=typer.colors.YELLOW)
         raise typer.Exit(code=1)
 
-    _run(lambda: _edit(message_id, post, target))
+    _run(lambda: _edit(message_id, request, target))
     typer.secho(f"Edited   : {message_id}", fg=typer.colors.GREEN)
 
 
-async def _edit(message_id: str, post: Post, chat_id: int) -> PublishResult:
+async def _edit(message_id: str, request: PublishRequest, chat_id: int) -> PublishResult:
     client, publisher = build_publisher(chat_id=chat_id)
     try:
-        return await publisher.edit(message_id, post)
+        return await publisher.edit(message_id, request)
     finally:
         await client.aclose()
 
@@ -228,16 +245,24 @@ async def _delete(message_id: str, chat_id: int | None) -> None:
 # ----------------------------------------------------------------- rendering
 
 
-def _build_post(
+def _target(chat_id: int | None, *, rehearsal: bool) -> int | None:
+    """A dry run is allowed before anything is configured; a real post is not."""
+    if rehearsal:
+        return chat_id if chat_id is not None else get_settings().max_chat_id
+    return resolve_chat_id(chat_id)
+
+
+def _build_request(
     *,
     text: str | None,
     text_file: Path | None,
+    chat_ref: str,
     media: list[Path],
     image_urls: list[str],
     text_format: str,
     silent: bool,
     no_link_preview: bool,
-) -> Post:
+) -> PublishRequest:
     if text and text_file:
         typer.secho("Use either the text argument or --text-file, not both.", fg=typer.colors.RED)
         raise typer.Exit(code=2)
@@ -253,8 +278,9 @@ def _build_post(
     items += [MediaItem.from_url(url) for url in image_urls]
 
     try:
-        return Post(
+        return PublishRequest(
             text=body,
+            channel_ref=chat_ref,
             media=tuple(items),
             format=post_format,
             notify=not silent,
@@ -265,35 +291,30 @@ def _build_post(
         raise typer.Exit(code=2) from exc
 
 
-def _print_post_preview(post: Post, chat_id: int | None, *, dry_run: bool) -> None:
+def _print_post_preview(request: PublishRequest, chat_id: int | None, *, dry_run: bool) -> None:
     title = "DRY RUN — nothing will be sent" if dry_run else "About to publish"
     typer.secho(title, fg=typer.colors.BLUE, bold=True)
     typer.echo(f"Channel  : {chat_id if chat_id is not None else 'not configured (dry run)'}")
-    typer.echo(f"Format   : {post.format.value}")
-    typer.echo(f"Notify   : {'yes' if post.notify else 'no'}")
-    if not post.notify:
+    typer.echo(f"Format   : {request.format.value}")
+    typer.echo(f"Notify   : {'yes' if request.notify else 'no'}")
+    if not request.notify:
         typer.secho(
             "Warning  : the API requires notify=true for channels; "
             "a silent post may be rejected.",
             fg=typer.colors.YELLOW,
         )
-    typer.echo(f"Length   : {len(post.text)} / {TEXT_LIMIT} characters")
-    for item in post.media:
+    typer.echo(f"Length   : {request.length} / {TEXT_LIMIT} characters")
+    for item in request.media:
         typer.echo(f"Media    : {item.kind.value}  {item.label}")
     typer.echo("--- text ---")
-    typer.echo(post.text[:PREVIEW_CHARS] + ("…" if len(post.text) > PREVIEW_CHARS else ""))
+    typer.echo(request.text[:PREVIEW_CHARS] + ("…" if request.length > PREVIEW_CHARS else ""))
     typer.echo("------------")
 
 
 def _print_result(result: PublishResult) -> None:
-    if result.dry_run:
-        typer.secho("Dry run  : request built, nothing sent.", fg=typer.colors.YELLOW)
-        body = (result.raw or {}).get("request_body", {})
-        typer.echo(json.dumps(body, ensure_ascii=False, indent=2))
-        return
     typer.secho("Published: OK", fg=typer.colors.GREEN)
-    typer.echo(f"Chat id  : {result.chat_id}")
-    typer.echo(f"Message  : {result.message_id or 'not returned by the API'}")
+    typer.echo(f"Chat id  : {result.channel_ref}")
+    typer.echo(f"Message  : {result.external_message_id or 'not returned by the API'}")
     if result.url:
         typer.echo(f"Link     : {result.url}")
     if result.published_at:

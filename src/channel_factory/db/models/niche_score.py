@@ -17,9 +17,11 @@ from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import Boolean, Date, ForeignKey, Integer, Numeric, String
+from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from channel_factory.core.enums import Platform
 from channel_factory.db.base import Base, CreatedAtMixin, UUIDPrimaryKeyMixin
 from channel_factory.db.models.niche import Niche
 
@@ -30,6 +32,18 @@ class NicheScoreRun(Base, UUIDPrimaryKeyMixin, CreatedAtMixin):
     __tablename__ = "niche_score_runs"
 
     score_version: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    # NULL means "all platforms". A single brand launches on Telegram and MAX at
+    # once, so a niche has to be comparable per platform and across both.
+    platform: Mapped[Platform | None] = mapped_column(
+        SAEnum(
+            Platform,
+            name="platform",
+            values_callable=lambda e: [m.value for m in e],
+            create_type=False,
+        ),
+        nullable=True,
+        index=True,
+    )
     as_of_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     niches_scored: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     niches_skipped: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

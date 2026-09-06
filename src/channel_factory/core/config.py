@@ -6,12 +6,15 @@ directly — use :func:`masked_database_url` instead.
 
 from __future__ import annotations
 
+from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
 
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url
+
+from channel_factory.core.enums import PublishMode
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
@@ -54,7 +57,34 @@ class Settings(BaseSettings):
     )
     direct_columns_config: Path = PROJECT_ROOT / "config" / "direct_columns.yaml"
     niche_score_config: Path = PROJECT_ROOT / "config" / "niche_score.yaml"
+    research_sources_config: Path = PROJECT_ROOT / "config" / "research_sources.yaml"
+    topic_score_config: Path = PROJECT_ROOT / "config" / "topic_score.yaml"
+    topic_lexicon_config: Path = PROJECT_ROOT / "config" / "topic_lexicon.yaml"
     reports_dir: Path = PROJECT_ROOT / "reports"
+
+    # The research engine needs its own API key: a Claude subscription does not
+    # provide one, and without it the LLM components simply become unavailable.
+    anthropic_api_key: str | None = None
+    # Google's free tier needs no card and covers our volumes with room to
+    # spare. Preferred automatically when present, because it costs nothing.
+    gemini_api_key: str | None = None
+    gemini_daily_request_limit: int = 1000
+    gemini_requests_per_minute: int = 10
+    github_token: str | None = None
+
+    # --- Publishing ---
+    # Both default to "off": an autonomous publisher must be harmless until
+    # someone deliberately turns it on.
+    publish_mode: PublishMode = PublishMode.DRY_RUN
+    auto_publish_enabled: bool = False
+    # MAX credentials are declared once, above, as SecretStr + int chat id.
+    telegram_bot_token: str | None = None
+    telegram_channel_id: str | None = None
+
+    # Hard spend ceilings. Enforced against the sum of ai_generations, so a bug
+    # cannot quietly drain the API balance: calls stop, research continues.
+    daily_cost_limit_usd: Decimal = Decimal("2.00")
+    monthly_cost_limit_usd: Decimal = Decimal("30.00")
 
     @property
     def effective_test_database_url(self) -> str:

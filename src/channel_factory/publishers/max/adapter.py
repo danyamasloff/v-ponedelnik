@@ -1,12 +1,10 @@
-"""MAX publishing adapter: domain post in, platform result out.
+"""MAX publisher: a prepared post in, a platform result out.
 
-The adapter owns the rules that belong to publishing rather than to HTTP:
-what a valid post is, how media becomes attachments, what a channel must look
-like before we send anything, and how the platform answer maps back to a
-:class:`PublishResult`.
-
-Deliberately stateless — nothing is written to PostgreSQL here. Publication
-history is a later phase and gets its own schema then.
+Implements the :class:`channel_factory.publishers.base.Publisher` protocol, so
+the same kill switch, the same validation and the same stored payload apply to
+MAX as to any platform added later. Everything HTTP lives in ``client.py``;
+this module owns the publishing rules — what a valid post is, how media becomes
+attachments, and whether the channel is one we may post to at all.
 """
 
 from __future__ import annotations
@@ -19,9 +17,10 @@ from typing import Any
 from channel_factory.core.enums import Platform
 from channel_factory.core.logging import get_logger
 from channel_factory.publishers.base import (
-    Post,
     PostFormat,
     PostValidationError,
+    PublishError,
+    PublishRequest,
     PublishResult,
 )
 from channel_factory.publishers.max.client import (
@@ -40,6 +39,10 @@ PUBLISHABLE_CHAT_TYPES = frozenset({"channel", "chat"})
 #: Admin rights that let a bot publish. The API returns a permission list;
 #: owners and admins may come back with an empty one, hence the flags too.
 POSTING_PERMISSIONS = frozenset({"write", "post_edit_delete_message", "edit_message", "edit"})
+
+#: Marker left by the drafting stage where the original analysis must go.
+#: Publishing a post that still contains it would ship a skeleton.
+PLACEHOLDER_MARKER = "[TODO"
 
 
 @dataclass(frozen=True)
@@ -112,35 +115,135 @@ class MaxPreflight:
 
 
 class MaxPublisher:
-    """Publishes posts into one MAX channel or group chat."""
+    """Publishes posts into MAX channels through the Bot API."""
 
     platform = Platform.MAX
+    text_limit = TEXT_LIMIT
 
     def __init__(
         self,
         client: MaxApiClient,
-        chat_id: int,
+        chat_id: int | None = None,
         *,
-        dry_run: bool = False,
         attachment_attempts: int = 4,
         attachment_retry_delay: float = 5.0,
     ) -> None:
         self._client = client
         self._chat_id = chat_id
-        self._dry_run = dry_run
         self._attachment_attempts = max(1, attachment_attempts)
         self._attachment_retry_delay = attachment_retry_delay
 
     @property
-    def chat_id(self) -> int:
+    def chat_id(self) -> int | None:
         return self._chat_id
+
+    def target(self, request: PublishRequest) -> int:
+        """Which chat this request goes to: its own, else the configured one."""
+        ref = request.channel_ref or (str(self._chat_id) if self._chat_id is not None else "")
+        if not ref:
+            raise PublishError("no channel id: pass channel_ref or configure MAX_CHAT_ID")
+        try:
+            return int(ref)
+        except ValueError as exc:
+            raise PublishError(f"MAX chat_id must be numeric, got {ref!r}") from exc
+
+    # -------------------------------------------------------------- contract
+
+    def validate(self, request: PublishRequest) -> list[str]:
+        """Problems worth catching before we spend a request on them."""
+        problems: list[str] = []
+        if not request.text.strip() and not request.media:
+            problems.append("текст пустой и нет вложений")
+        if request.length > self.text_limit:
+            problems.append(
+                f"текст длиннее лимита MAX: {request.length} из {self.text_limit} символов"
+            )
+        ref = request.channel_ref or (str(self._chat_id) if self._chat_id is not None else "")
+        if not ref:
+            problems.append("не указан chat_id канала")
+        elif not str(ref).lstrip("-").isdigit():
+            # The API types chat_id as an integer; a handle would fail server
+            # side with a much less obvious message.
+            problems.append(f"chat_id должен быть числом, получено {ref!r}")
+        if PLACEHOLDER_MARKER in request.text:
+            problems.append("в тексте остались незаполненные заготовки")
+        for item in request.media:
+            if item.path is not None and not item.path.is_file():
+                problems.append(f"файл вложения не найден: {item.path}")
+        return problems
+
+    def build_payload(self, request: PublishRequest) -> dict[str, Any]:
+        """The exact HTTP request that would be sent, minus the media upload.
+
+        Attachments appear as descriptors rather than tokens: obtaining a token
+        means actually uploading the file, which a rehearsal must not do. The
+        token-free shape is also what makes this payload safe to store and to
+        print in dry-run reports.
+        """
+        body: dict[str, Any] = {"text": request.text, "notify": request.notify}
+        if request.format is not PostFormat.PLAIN:
+            body["format"] = request.format.value
+        if request.media:
+            body["attachments"] = [
+                {"type": item.kind.value, "payload": {"source": item.label}}
+                for item in request.media
+            ]
+
+        params: dict[str, Any] = {"chat_id": request.channel_ref or self._chat_id}
+        if request.disable_link_preview:
+            params["disable_link_preview"] = True
+
+        return {
+            "method": "POST",
+            "url": "/messages",
+            "params": params,
+            # The token is never included here: this payload is written to the
+            # database and printed in dry-run reports.
+            "headers": {"Authorization": "<MAX_BOT_TOKEN>", "Content-Type": "application/json"},
+            "body": body,
+        }
+
+    async def publish(self, request: PublishRequest) -> PublishResult:
+        """Send the post. Only ever called when the kill switch allows it."""
+        problems = self.validate(request)
+        if problems:
+            raise PostValidationError("; ".join(problems))
+
+        chat_id = self.target(request)
+        body = await self.build_body(request)
+        response = await self._send_with_attachment_retry(request, chat_id, body)
+        result = _result_from_response(chat_id, response)
+        logger.info(
+            "max.post.published",
+            extra={
+                "chat_id": chat_id,
+                "message_id": result.external_message_id,
+                "attachments": len(request.media),
+                "text_length": request.length,
+            },
+        )
+        return result
+
+    async def build_body(self, request: PublishRequest) -> dict[str, Any]:
+        """Message body for POST /messages, uploading media as needed."""
+        body: dict[str, Any] = {"text": request.text, "notify": request.notify}
+        if request.format is not PostFormat.PLAIN:
+            body["format"] = request.format.value
+        attachments = [await self._client.upload(item) for item in request.media]
+        if attachments:
+            body["attachments"] = attachments
+        return body
 
     # ------------------------------------------------------------- preflight
 
-    async def preflight(self) -> MaxPreflight:
+    async def preflight(self, chat_id: int | None = None) -> MaxPreflight:
         """Check token, chat and posting rights before anything is published."""
+        target = chat_id if chat_id is not None else self._chat_id
+        if target is None:
+            raise PublishError("no channel id: configure MAX_CHAT_ID or pass --chat-id")
+
         bot = MaxBotInfo.from_api(await self._client.get_me())
-        chat = MaxChatInfo.from_api(await self._client.get_chat(self._chat_id))
+        chat = MaxChatInfo.from_api(await self._client.get_chat(target))
 
         problems: list[str] = []
         if chat.type not in PUBLISHABLE_CHAT_TYPES:
@@ -155,7 +258,7 @@ class MaxPublisher:
         permissions: tuple[str, ...] = ()
         can_post: bool | None = None
         try:
-            membership = await self._client.get_my_membership(self._chat_id)
+            membership = await self._client.get_my_membership(target)
         except MaxApiError as exc:
             # 403/404 here usually means the bot is not an administrator, but
             # the API does not promise that, so it is reported, not assumed.
@@ -165,9 +268,7 @@ class MaxPublisher:
             is_owner = bool(membership.get("is_owner"))
             raw_permissions = membership.get("permissions") or []
             permissions = tuple(str(item) for item in raw_permissions)
-            can_post = bool(
-                is_owner or is_admin or (set(permissions) & POSTING_PERMISSIONS)
-            )
+            can_post = bool(is_owner or is_admin or (set(permissions) & POSTING_PERMISSIONS))
             if not can_post:
                 problems.append(
                     "bot is a member but has no posting rights — "
@@ -184,78 +285,25 @@ class MaxPublisher:
             problems=tuple(problems),
         )
 
-    # --------------------------------------------------------------- publish
+    # -------------------------------------------------------- edit and delete
 
-    async def publish(self, post: Post) -> PublishResult:
-        """Send one post. In dry-run mode nothing leaves the machine."""
-        _validate(post)
-
-        if self._dry_run:
-            body = _text_body(post)
-            body["attachments"] = [
-                {"type": item.kind.value, "payload": {"preview": item.label}}
-                for item in post.media
-            ]
-            return PublishResult(
-                platform=self.platform,
-                chat_id=self._chat_id,
-                dry_run=True,
-                raw={"request_body": body, "chat_id": self._chat_id},
-            )
-
-        body = await self.build_body(post)
-        response = await self._send_with_attachment_retry(post, body)
-        result = _result_from_response(self._chat_id, response)
-        logger.info(
-            "max.post.published",
-            extra={
-                "chat_id": self._chat_id,
-                "message_id": result.message_id,
-                "attachments": len(post.media),
-                "text_length": len(post.text),
-            },
-        )
-        return result
-
-    async def build_body(self, post: Post) -> dict[str, Any]:
-        """Message body for POST /messages, uploading media as needed."""
-        _validate(post)
-        body = _text_body(post)
-        attachments = [await self._client.upload(item) for item in post.media]
-        if attachments:
-            body["attachments"] = attachments
-        return body
-
-    async def edit(self, message_id: str, post: Post) -> PublishResult:
+    async def edit(self, message_id: str, request: PublishRequest) -> PublishResult:
         """Replace the content of a post the bot published earlier."""
-        _validate(post)
-        if self._dry_run:
-            return PublishResult(
-                platform=self.platform,
-                chat_id=self._chat_id,
-                message_id=message_id,
-                dry_run=True,
-                raw={"request_body": _text_body(post)},
-            )
-        body = await self.build_body(post)
+        problems = self.validate(request)
+        if problems:
+            raise PostValidationError("; ".join(problems))
+        body = await self.build_body(request)
         response = await self._client.edit_message(message_id=message_id, body=body)
         _raise_if_unsuccessful(response, action="edit")
-        return PublishResult(
-            platform=self.platform,
-            chat_id=self._chat_id,
-            message_id=message_id,
-            raw=response,
-        )
+        return PublishResult(external_message_id=message_id, raw_response=response)
 
     async def delete(self, message_id: str) -> None:
         """Delete a post the bot published earlier."""
-        if self._dry_run:
-            return
         response = await self._client.delete_message(message_id)
         _raise_if_unsuccessful(response, action="delete")
 
     async def _send_with_attachment_retry(
-        self, post: Post, body: dict[str, Any]
+        self, request: PublishRequest, chat_id: int, body: dict[str, Any]
     ) -> dict[str, Any]:
         """Send, retrying while the platform is still processing an upload.
 
@@ -263,39 +311,23 @@ class MaxPublisher:
         can fail because the file is not ready yet, and the fix is to wait and
         try again. Only that specific failure is retried here.
         """
-        attempts = self._attachment_attempts if post.media else 1
+        attempts = self._attachment_attempts if request.media else 1
         for attempt in range(1, attempts + 1):
             try:
                 return await self._client.send_message(
-                    chat_id=self._chat_id,
+                    chat_id=chat_id,
                     body=body,
-                    disable_link_preview=post.disable_link_preview,
+                    disable_link_preview=request.disable_link_preview,
                 )
             except MaxApiError as exc:
                 if attempt == attempts or not is_attachment_not_ready(exc):
                     raise
                 delay = self._attachment_retry_delay * attempt
                 logger.warning(
-                    "max.post.attachment_not_ready",
-                    extra={"attempt": attempt, "sleep": delay},
+                    "max.post.attachment_not_ready", extra={"attempt": attempt, "sleep": delay}
                 )
                 await asyncio.sleep(delay)
         raise MaxApiError("send failed after attachment retries")  # pragma: no cover
-
-
-def _validate(post: Post) -> None:
-    if len(post.text) > TEXT_LIMIT:
-        raise PostValidationError(
-            f"post text is {len(post.text)} characters, the MAX limit is {TEXT_LIMIT}; "
-            "split it into several posts yourself instead of letting it be cut silently"
-        )
-
-
-def _text_body(post: Post) -> dict[str, Any]:
-    body: dict[str, Any] = {"text": post.text, "notify": post.notify}
-    if post.format is not PostFormat.PLAIN:
-        body["format"] = post.format.value
-    return body
 
 
 def _raise_if_unsuccessful(response: Any, *, action: str) -> None:
@@ -316,10 +348,9 @@ def _result_from_response(chat_id: int, response: Any) -> PublishResult:
         published_at = datetime.fromtimestamp(timestamp / 1000, tz=UTC)
 
     return PublishResult(
-        platform=Platform.MAX,
-        chat_id=chat_id,
-        message_id=str(body.get("mid")) if body.get("mid") else None,
+        external_message_id=str(body.get("mid")) if body.get("mid") else None,
+        raw_response=response if isinstance(response, dict) else {},
         url=message.get("url"),
         published_at=published_at,
-        raw=response if isinstance(response, dict) else None,
+        channel_ref=str(chat_id),
     )
