@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from channel_factory.content.access import audience_can_open
+from channel_factory.content.access import audience_can_open, strip_tracking
 from channel_factory.core.enums import EventType, Platform
 
 ANALYSIS_PLACEHOLDER = "[TODO PHASE 5: оригинальный разбор — что читатель сможет сделать]"
@@ -29,6 +29,11 @@ EVENT_PHRASES: dict[EventType, str] = {
     EventType.INCIDENT: "сообщил об инциденте",
     EventType.OTHER: "сообщил",
 }
+
+#: Trust levels that let us say "vendor X did Y": the vendor's own channel or
+#: another first-hand account. Anything else reports someone writing *about* a
+#: vendor, which is not the same statement.
+FIRST_HAND_TRUST = frozenset({"OFFICIAL", "PRIMARY"})
 
 #: What to say when we have no usable product name. "обновил обновление" is
 #: what a naive fallback produces, so these events get their own wording.
@@ -142,7 +147,15 @@ def render_draft(
     shown_title = (headline or title).strip()
     lines: list[str] = [f"**{shown_title}**", ""]
 
-    facts = fact_line(vendor=vendor, product=product, version=version, event_type=event_type)
+    # "OpenAI опубликовал руководство" is a claim about who did what, and we
+    # only know that when the source is the vendor itself. Under a secondary
+    # source (Habr, CNews) the same sentence would be an invention: the vendor
+    # was mentioned in the article, not the author of it.
+    facts = (
+        fact_line(vendor=vendor, product=product, version=version, event_type=event_type)
+        if trust in FIRST_HAND_TRUST
+        else None
+    )
     if facts:
         lines += [facts, ""]
 
@@ -159,8 +172,9 @@ def render_draft(
     if primary_url:
         label = primary_source or "источник"
         if audience_can_open(primary_url):
-            lines.append(f"Источник: {label} — {primary_url}")
-            sources.append(primary_url)
+            clean_url = strip_tracking(primary_url)
+            lines.append(f"Источник: {label} — {clean_url}")
+            sources.append(clean_url)
         else:
             lines.append(f"Источник: {label} (на английском, без ссылки)")
 

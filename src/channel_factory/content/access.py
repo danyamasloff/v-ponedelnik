@@ -17,7 +17,7 @@ post that cites it.
 from __future__ import annotations
 
 from functools import lru_cache
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from channel_factory.core.config import get_settings
 from channel_factory.core.logging import get_logger
@@ -49,6 +49,28 @@ def reachable_domains() -> frozenset[str]:
         if source.audience_access == "RU" and source.url
     }
     return frozenset(domain for domain in domains if domain)
+
+
+#: Query parameters that exist to track the reader, not to find the page.
+TRACKING_PREFIXES = ("utm_", "yclid", "gclid", "fbclid", "from", "ref")
+
+
+def strip_tracking(url: str) -> str:
+    """Drop tracking parameters before a link goes in front of readers.
+
+    Feeds hand out URLs stuffed with campaign tags. Passing them on makes the
+    link long, ugly and slightly rude: it reports our readers back to the
+    source's analytics for no benefit to anyone here.
+    """
+    parts = urlsplit(url)
+    if not parts.query:
+        return url
+    kept = [
+        (key, value)
+        for key, value in parse_qsl(parts.query, keep_blank_values=True)
+        if not key.lower().startswith(TRACKING_PREFIXES)
+    ]
+    return urlunsplit(parts._replace(query=urlencode(kept)))
 
 
 def audience_can_open(url: str | None) -> bool:

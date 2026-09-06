@@ -182,3 +182,61 @@ class TestOwnSlots:
     def test_bad_value_is_refused(self) -> None:
         with pytest.raises(ValueError):
             parse_own_slots("середина")
+
+
+class TestFactLineTrust:
+    """A fact sentence is a claim about who did what.
+
+    Under a secondary source it would be an invention: the vendor was
+    mentioned in the article, not the author of it.
+    """
+
+    def _draft(self, trust: str):
+        return render_draft(
+            platform=Platform.MAX,
+            cluster_id="c1",
+            title="Как научить модель стилю",
+            vendor="openai",
+            product="ChatGPT",
+            version=None,
+            event_type=EventType.GUIDE,
+            primary_url="https://habr.com/ru/articles/1/",
+            primary_source="Habr",
+            trust=trust,
+            analysis=ANALYSIS,
+        )
+
+    def test_official_source_gets_the_fact_sentence(self) -> None:
+        assert "OpenAI опубликовал" in self._draft("OFFICIAL").text
+
+    def test_secondary_source_does_not(self) -> None:
+        assert "OpenAI опубликовал" not in self._draft("REPUTABLE_SECONDARY").text
+
+    def test_unknown_trust_does_not(self) -> None:
+        assert "OpenAI опубликовал" not in self._draft("UNKNOWN").text
+
+
+class TestTrackingParameters:
+    def test_campaign_tags_are_dropped(self) -> None:
+        url = "https://habr.com/ru/articles/1/?utm_source=rss&utm_campaign=1&id=7"
+        assert access.strip_tracking(url) == "https://habr.com/ru/articles/1/?id=7"
+
+    def test_a_clean_url_is_untouched(self) -> None:
+        url = "https://habr.com/ru/articles/1/"
+        assert access.strip_tracking(url) == url
+
+    def test_the_printed_link_is_the_clean_one(self) -> None:
+        draft = render_draft(
+            platform=Platform.MAX,
+            cluster_id="c1",
+            title="Заголовок",
+            vendor=None,
+            product=None,
+            version=None,
+            event_type=EventType.GUIDE,
+            primary_url="https://habr.com/ru/articles/1/?utm_source=rss",
+            primary_source="Habr",
+            analysis=ANALYSIS,
+        )
+        assert "utm_source" not in draft.text
+        assert draft.sources == ["https://habr.com/ru/articles/1/"]

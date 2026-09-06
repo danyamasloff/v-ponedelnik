@@ -481,7 +481,9 @@ class ResearchService:
             "research clustering finished",
             extra={
                 "processed": outcome.items_processed,
-                "created": outcome.clusters_created,
+                # Not "created": LogRecord already owns that attribute, and
+                # logging raises KeyError rather than overwriting it.
+                "clusters_created": outcome.clusters_created,
                 "duration_ms": outcome.duration_ms,
             },
         )
