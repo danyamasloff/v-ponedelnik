@@ -28,7 +28,7 @@ from channel_factory.publishers.base import (
     PublishRequest,
     PublishResult,
 )
-from channel_factory.publishers.max.adapter import MaxPreflight
+from channel_factory.publishers.max.adapter import MaxBotInfo, MaxPreflight
 from channel_factory.publishers.max.client import TEXT_LIMIT
 from channel_factory.publishers.max.discovery import discover_chats
 from channel_factory.publishers.max.factory import build_client, build_publisher, resolve_chat_id
@@ -45,6 +45,29 @@ def _run[T](factory: Callable[[], Awaitable[T]]) -> T:
     except PublishError as exc:
         typer.secho(f"MAX error: {exc}", fg=typer.colors.RED)
         raise typer.Exit(code=1) from exc
+
+
+@app.command("max-whoami")
+def max_whoami() -> None:
+    """Проверить только связь с MAX и токен: чей это бот.
+
+    Отдельно от max-check намеренно: там нужен ещё и chat_id, а первый
+    вопрос при переезде на чужой сервер другой — доходит ли запрос до MAX
+    вообще. Ответ на него не должен зависеть от того, настроен ли канал.
+    """
+    bot = _run(_whoami)
+    typer.secho("Связь с MAX: OK", fg=typer.colors.GREEN)
+    typer.echo(f"Бот      : {bot.name or '?'} (@{bot.username or '?'}, id={bot.user_id})")
+    if not bot.is_bot:
+        typer.secho("Warning  : токен принадлежит не боту", fg=typer.colors.YELLOW)
+
+
+async def _whoami() -> MaxBotInfo:
+    client = build_client()
+    try:
+        return MaxBotInfo.from_api(await client.get_me())
+    finally:
+        await client.aclose()
 
 
 @app.command("max-check")

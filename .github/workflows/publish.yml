@@ -48,10 +48,17 @@ jobs:
       # Проверка связи до всего остального: сюда же смотрим, доступен ли MAX
       # Bot API с зарубежного runner'а. Если нет — конвейеру здесь не место,
       # и это выяснится на первом же запуске, а не в день публикации.
-      - name: Проверить доступ
-        run: |
-          uv run python -m channel_factory.cli db-status
-          uv run python -m channel_factory.cli max-check
+      # Порядок важен: сначала выясняем, доходит ли запрос до MAX с
+      # зарубежного runner'а, и только потом проверяем права в канале.
+      # Иначе незаданный MAX_CHAT_ID замаскирует главный вопрос переезда.
+      - name: Проверить базу
+        run: uv run python -m channel_factory.cli db-status
+
+      - name: Проверить связь с MAX
+        run: uv run python -m channel_factory.cli max-whoami
+
+      - name: Проверить права в канале
+        run: uv run python -m channel_factory.cli max-check
 
       - name: Применить миграции
         if: ${{ !inputs.preflight_only }}
