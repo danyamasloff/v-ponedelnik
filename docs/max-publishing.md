@@ -145,7 +145,7 @@ uv run python -m channel_factory.cli max-delete-post <mid>
 
 ```
 publishers/
-    base.py        Post, MediaItem, PublishResult — общий контракт платформ
+    base.py        PublishRequest, MediaItem, PublishResult — контракт платформ
     max/
         client.py     HTTP: авторизация, повторы, троттлинг, разбор ошибок
         adapter.py    правила публикации: валидация, вложения, preflight
@@ -167,5 +167,4 @@ HTTP-клиент без заголовка `Authorization`.
 * Не читает статистику постов (`MessageStat` в ответе API) — отдельная задача
   вместе с аналитикой публикаций.
 * Не работает с комментариями, кнопками (`keyboard`), опросами и вебхуками.
-* Не планирует посты по расписанию.
 * Не постит в Telegram — это отдельный адаптер.
