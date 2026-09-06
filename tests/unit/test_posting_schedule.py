@@ -6,7 +6,7 @@ tested without a database or a network.
 
 from __future__ import annotations
 
-from datetime import datetime, time, timedelta
+from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
 
 import pytest
@@ -30,6 +30,7 @@ from channel_factory.content.identity import initials, render_avatar
 from channel_factory.core.enums import EventType
 from channel_factory.publishers.scheduler import (
     BreakingRules,
+    moscow_time,
     open_slot,
     parse_slots,
     slots_for_day,
@@ -273,3 +274,31 @@ class TestIdentity:
         path = render_avatar("В понедельник", tmp_path / "avatar.png")
         with Image.open(path) as image:
             assert image.size[0] == image.size[1]
+
+
+@pytest.mark.parametrize("utc_hour,msk_hour", [(6, 9), (11, 14), (16, 19)])
+def test_utc_runner_opens_moscow_slots(utc_hour: int, msk_hour: int) -> None:
+    moment = moscow_time(datetime(2026, 9, 7, utc_hour, 7, tzinfo=UTC))
+    slot = open_slot(moment, SLOTS, WINDOW)
+    assert slot is not None
+    assert slot.starts_at.hour == msk_hour
+    assert slot.starts_at.utcoffset() == timedelta(hours=3)
+
+
+def test_moscow_day_rolls_over_before_utc() -> None:
+    moment = moscow_time(datetime(2026, 9, 6, 21, 5, tzinfo=UTC))
+    assert (moment.day, moment.hour) == (7, 0)
+    assert open_slot(moment, SLOTS, WINDOW) is None
+
+
+def test_naive_cli_time_means_moscow() -> None:
+    moment = moscow_time(datetime(2026, 9, 7, 9))
+    assert moment.astimezone(UTC).hour == 6
+
+
+async def test_upcoming_uses_moscow_even_with_utc_input() -> None:
+    from channel_factory.publishers.scheduler import PostingScheduler
+
+    scheduler = PostingScheduler(None, None, slot_times=SLOTS, window=WINDOW)
+    slots = await scheduler.upcoming(now=datetime(2026, 9, 7, 5, tzinfo=UTC))
+    assert [slot.starts_at.astimezone(UTC).hour for slot in slots] == [6, 11, 16]

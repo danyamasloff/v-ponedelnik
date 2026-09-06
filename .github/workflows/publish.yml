@@ -1,14 +1,14 @@
-# Ежечасный прогон публикации. Команда сама решает, нужен ли пост прямо сейчас:
-# слот может быть закрыт, уже заполнен или занят срочной новостью.
-#
-# Почему час, а не точное время слота: cron в GitHub Actions не гарантирует
-# минуту запуска, а окно слота (PUBLISH_SLOT_WINDOW_MINUTES) как раз для этого
-# и сделано — пропущенный запуск наверстывается следующим.
 name: publish
 
 on:
+  # Deploying scheduler changes checks the cloud connections without posting.
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/publish.yml
+      - src/channel_factory/publishers/scheduler.py
   schedule:
-    - cron: "5 * * * *"
+    - cron: "7,27,47 * * * *"
   workflow_dispatch:
     inputs:
       preflight_only:
@@ -36,6 +36,9 @@ jobs:
       CONTENT_MODEL: ${{ secrets.CONTENT_MODEL }}
       PUBLISH_MODE: ${{ vars.PUBLISH_MODE || 'DRY_RUN' }}
       AUTO_PUBLISH_ENABLED: ${{ vars.AUTO_PUBLISH_ENABLED || 'false' }}
+      TZ: Europe/Moscow
+      PUBLISH_SLOTS: "09:00,14:00,19:00"
+      PUBLISH_SLOT_WINDOW_MINUTES: "180"
       LOG_LEVEL: INFO
     steps:
       - uses: actions/checkout@v4
@@ -52,6 +55,11 @@ jobs:
       # Порядок важен: сначала выясняем, доходит ли запрос до MAX с
       # зарубежного runner'а, и только потом проверяем права в канале.
       # Иначе незаданный MAX_CHAT_ID замаскирует главный вопрос переезда.
+      - name: Показать время и расписание
+        run: |
+          date '+%Y-%m-%d %H:%M:%S %Z'
+          echo "Слоты: $PUBLISH_SLOTS МСК. Проверка каждые 20 минут; возможны задержки GitHub."
+
       - name: Проверить базу
         run: uv run python -m channel_factory.cli db-status
 
@@ -62,9 +70,9 @@ jobs:
         run: uv run python -m channel_factory.cli max-check
 
       - name: Применить миграции
-        if: ${{ !inputs.preflight_only }}
+        if: ${{ !inputs.preflight_only && github.event_name != 'push' }}
         run: uv run python -m alembic upgrade head
 
       - name: Опубликовать, если пора
-        if: ${{ !inputs.preflight_only }}
+        if: ${{ !inputs.preflight_only && github.event_name != 'push' }}
         run: uv run python -m channel_factory.cli publish-due

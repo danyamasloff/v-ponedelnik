@@ -287,3 +287,24 @@ docs/            архитектура и формат импорта
 
 * [docs/architecture.md](docs/architecture.md) — модули и модель данных
 * [docs/direct-import.md](docs/direct-import.md) — формат импорта, маппинг колонок, правила нормализации
+
+
+### Облачное расписание MAX (МСК)
+
+`.github/workflows/publish.yml` работает на GitHub Actions, независимо от
+локального компьютера. PostgreSQL и генератор должны быть доступны из облака;
+локальный Docker/Ollama при выключенном компьютере недоступны.
+Проверка очереди запускается на 7-й, 27-й и 47-й минуте каждого часа.
+Публикационные слоты: **09:00, 14:00, 19:00 МСК (UTC+3)**, окно каждого — 180 минут.
+GitHub может задерживать и пропускать scheduled runs: точная минута не гарантирована.
+Сам scheduler использует МСК независимо от часового пояса ОС.
+Срочные темы могут выходить вне слотов по существующим правилам; их дневной
+лимит считается по московскому календарному дню.
+
+Workflow должен быть активен в default branch. Для реальных отправок нужны
+repository variables `PUBLISH_MODE=LIVE`, `AUTO_PUBLISH_ENABLED=true` и secrets
+`DATABASE_URL`, `MAX_BOT_TOKEN`, `MAX_CHAT_ID`, а также доступный генератор
+(`GEMINI_API_KEY` либо настроенные `CONTENT_API_*`/`CONTENT_MODEL`).
+Остановка: `AUTO_PUBLISH_ENABLED=false`. Telegram этот workflow пока не публикует.
+В Actions фильтр `event:schedule` показывает фактические автоматические запуски;
+наличие cron в файле не заменяет проверку успешного scheduled run.
