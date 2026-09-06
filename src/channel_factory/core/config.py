@@ -10,7 +10,7 @@ from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field, SecretStr
+from pydantic import AliasChoices, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url
 
@@ -71,7 +71,12 @@ class Settings(BaseSettings):
     gemini_api_key: str | None = None
     gemini_daily_request_limit: int = 1000
     gemini_requests_per_minute: int = 10
-    github_token: str | None = None
+    # Читается и как GH_TOKEN: префикс GITHUB_ зарезервирован GitHub Actions,
+    # и workflow, который задаёт такую переменную, регистрируется не всегда.
+    # Локально привычное имя продолжает работать.
+    github_token: str | None = Field(
+        default=None, validation_alias=AliasChoices("GITHUB_TOKEN", "GH_TOKEN")
+    )
 
     # --- Publishing ---
     # Both default to "off": an autonomous publisher must be harmless until

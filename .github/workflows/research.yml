@@ -18,7 +18,8 @@ jobs:
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Не GITHUB_TOKEN: этот префикс зарезервирован GitHub Actions.
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       LOG_LEVEL: INFO
     steps:
       - uses: actions/checkout@v4
