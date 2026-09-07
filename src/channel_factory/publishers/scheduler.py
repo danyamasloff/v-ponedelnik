@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime, time, timedelta
+from datetime import UTC, datetime, time, timedelta, tzinfo
 from enum import StrEnum
 from pathlib import Path
 
@@ -165,6 +165,7 @@ class PostingScheduler:
         window: timedelta,
         own_slot_indexes: frozenset[int] = frozenset(),
         topics_path: Path | None = None,
+        timezone: tzinfo | None = None,
         max_topic_age: timedelta | None = None,
         breaking: BreakingRules | None = None,
     ) -> None:
@@ -177,14 +178,22 @@ class PostingScheduler:
         # its own, so this is a deliberate reservation, not a fallback.
         self._own_slot_indexes = own_slot_indexes
         self._topics_path = topics_path
+        # Слоты живут в поясе канала. Пояс машины сюда не попадает намеренно:
+        # один и тот же конвейер должен публиковать в одно и то же время
+        # локально, где бы он ни крутился.
+        self._timezone = timezone
         # Stale news is worse than no news: the reader learns the channel is
         # behind, which is exactly the reputation an automated feed must avoid.
         self._max_topic_age = max_topic_age
         self._breaking = breaking or BreakingRules()
 
+    def now(self) -> datetime:
+        """Current time in the channel's timezone."""
+        return datetime.now(self._timezone) if self._timezone else datetime.now().astimezone()
+
     async def run_once(self, now: datetime | None = None) -> SchedulerOutcome:
         """Publish breaking news if there is any, otherwise fill the open slot."""
-        moment = now or datetime.now().astimezone()
+        moment = now or self.now()
 
         hot = await self.breaking_cluster(moment)
         if hot is not None:
@@ -389,7 +398,7 @@ class PostingScheduler:
 
     async def upcoming(self, days: int = 1, now: datetime | None = None) -> list[Slot]:
         """Slots from now until ``days`` ahead — what the plan looks like."""
-        moment = now or datetime.now().astimezone()
+        moment = now or self.now()
         plan: list[Slot] = []
         for offset in range(days):
             for slot in slots_for_day(

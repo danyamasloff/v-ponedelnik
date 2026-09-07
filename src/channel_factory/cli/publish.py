@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import typer
 from sqlalchemy import select
@@ -54,6 +55,7 @@ def _scheduler(database: Database, service: PublishingService) -> PostingSchedul
         window=timedelta(minutes=settings.publish_slot_window_minutes),
         own_slot_indexes=parse_own_slots(settings.publish_own_slots),
         topics_path=settings.evergreen_topics_config,
+        timezone=ZoneInfo(settings.publish_timezone),
         max_topic_age=timedelta(hours=settings.publish_max_topic_age_hours),
         breaking=BreakingRules(
             enabled=settings.breaking_enabled,

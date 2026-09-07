@@ -12,6 +12,7 @@ the mark sits in the middle with room around it. Nothing at the edges.
 
 from __future__ import annotations
 
+from enum import StrEnum
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
@@ -29,6 +30,10 @@ from channel_factory.core.logging import get_logger
 logger = get_logger(__name__)
 
 AVATAR_SIZE = 640
+
+#: Weekday label on the calendar avatar. The channel is called "В понедельник",
+#: so the sheet shows Monday and nothing else needs explaining.
+CALENDAR_LABEL = "ПН"
 #: Everything must survive being shown as a 40 px circle, so the mark is one
 #: or two glyphs and nothing else.
 MAX_MARK_CHARS = 2
@@ -46,6 +51,78 @@ def initials(name: str) -> str:
     if len(words) == 1:
         return words[0][:MAX_MARK_CHARS].capitalize()
     return (words[0][0] + words[1][0]).capitalize()
+
+
+class AvatarStyle(StrEnum):
+    """Which mark the avatar carries."""
+
+    INITIALS = "initials"
+    CALENDAR = "calendar"
+
+
+def render_avatar_calendar(
+    destination: Path,
+    *,
+    label: str = CALENDAR_LABEL,
+    day: str = "1",
+) -> Path:
+    """A tear-off calendar sheet: green header with the weekday, big numeral.
+
+    The metaphor does the work the initials could not: a reader sees Monday and
+    understands the channel before reading a word of the description.
+    """
+    bold_path, _ = _load_fonts()
+    image = Image.new("RGB", (AVATAR_SIZE, AVATAR_SIZE), PAPER)
+    draw = ImageDraw.Draw(image)
+
+    # The sheet is generous: at 32 px the avatar is mostly this rectangle, so
+    # margins around it are wasted pixels.
+    sheet_w, sheet_h = 420, 470
+    left = (AVATAR_SIZE - sheet_w) // 2
+    top = (AVATAR_SIZE - sheet_h) // 2
+    header_h = 132
+
+    draw.rectangle((left, top, left + sheet_w, top + sheet_h), fill=(255, 255, 255))
+    draw.rectangle((left, top, left + sheet_w, top + header_h), fill=GREEN)
+
+    label_font = ImageFont.truetype(bold_path, 62)
+    _draw_centered(draw, label, label_font, left, left + sheet_w, top + 30, PAPER, spacing=8)
+
+    day_font = ImageFont.truetype(bold_path, 240)
+    box = draw.textbbox((0, 0), day, font=day_font)
+    draw.text(
+        (
+            left + (sheet_w - (box[2] - box[0])) / 2 - box[0],
+            top + header_h + (sheet_h - header_h - (box[3] - box[1])) / 2 - box[1],
+        ),
+        day,
+        font=day_font,
+        fill=(28, 33, 31),
+    )
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    image.save(destination, format="PNG", optimize=True)
+    logger.info("identity.avatar", extra={"file": destination.name, "style": "calendar"})
+    return destination
+
+
+def _draw_centered(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    font: ImageFont.FreeTypeFont,
+    left: int,
+    right: int,
+    top: int,
+    fill: tuple[int, int, int],
+    *,
+    spacing: int = 0,
+) -> None:
+    """Horizontally centred text, with optional tracking."""
+    width = sum(int(font.getlength(char)) + spacing for char in text) - spacing
+    x = left + (right - left - width) / 2
+    for char in text:
+        draw.text((x, top), char, font=font, fill=fill)
+        x += int(font.getlength(char)) + spacing
 
 
 def render_avatar(

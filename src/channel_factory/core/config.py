@@ -104,6 +104,11 @@ class Settings(BaseSettings):
     # was planned around; a slot that has already been filled is never filled
     # twice, so running the command more often is harmless.
     publish_slots: str = "09:00,14:00,19:00"
+    # Часовой пояс канала, а не сервера. Без него слоты означают время того
+    # места, где запущен процесс: на runner'е GitHub это UTC, и «09:00» для
+    # читателя превращается в полдень. Аудитория живёт в одном поясе — он и
+    # должен быть записан явно.
+    publish_timezone: str = "Europe/Moscow"
     # How long after a slot opens it may still be filled. Wider than the gap
     # between runs, so a missed run does not silently skip a post.
     publish_slot_window_minutes: int = 180

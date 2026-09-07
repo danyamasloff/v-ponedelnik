@@ -17,6 +17,10 @@ dependencies = [
     "feedparser>=6.0.14",
     "httpx>=0.28.1",
     "pillow>=11.0",
+    # База часовых поясов: на Windows её нет в системе, и zoneinfo без неё
+    # не находит Europe/Moscow. Расписание канала не должно зависеть от того,
+    # где запущен процесс.
+    "tzdata>=2025.1",
 ]
 
 [dependency-groups]

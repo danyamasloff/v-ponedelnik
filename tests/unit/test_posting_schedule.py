@@ -6,8 +6,9 @@ tested without a database or a network.
 
 from __future__ import annotations
 
-from datetime import datetime, time, timedelta
+from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -30,6 +31,7 @@ from channel_factory.content.identity import initials, render_avatar
 from channel_factory.core.enums import EventType
 from channel_factory.publishers.scheduler import (
     BreakingRules,
+    PostingScheduler,
     open_slot,
     parse_slots,
     slots_for_day,
@@ -273,3 +275,39 @@ class TestIdentity:
         path = render_avatar("В понедельник", tmp_path / "avatar.png")
         with Image.open(path) as image:
             assert image.size[0] == image.size[1]
+
+
+class TestTimezone:
+    """Slots belong to the channel's timezone, not the machine's.
+
+    Measured on the live deployment: GitHub runners are on UTC, so slots meant
+    as 09:00 Moscow were opening at noon Moscow, and every scheduled run fell
+    outside a window.
+    """
+
+    def test_scheduler_reports_time_in_the_channel_timezone(self) -> None:
+        scheduler = PostingScheduler(
+            database=None,  # type: ignore[arg-type]  # unused by now()
+            service=None,  # type: ignore[arg-type]
+            slot_times=SLOTS,
+            window=WINDOW,
+            timezone=ZoneInfo("Europe/Moscow"),
+        )
+        assert scheduler.now().tzinfo is not None
+        assert scheduler.now().utcoffset() == timedelta(hours=3)
+
+    def test_a_moscow_slot_is_open_when_utc_says_otherwise(self) -> None:
+        """09:30 MSK is 06:30 UTC — inside the morning slot only in Moscow."""
+        moment = datetime(2026, 9, 7, 9, 30, tzinfo=ZoneInfo("Europe/Moscow"))
+        assert open_slot(moment, SLOTS, WINDOW) is not None
+        assert open_slot(moment.astimezone(UTC).replace(tzinfo=None), SLOTS, WINDOW) is None
+
+    def test_without_a_timezone_the_machine_decides(self) -> None:
+        """The old behaviour stays available, and is what the default avoids."""
+        scheduler = PostingScheduler(
+            database=None,  # type: ignore[arg-type]
+            service=None,  # type: ignore[arg-type]
+            slot_times=SLOTS,
+            window=WINDOW,
+        )
+        assert scheduler.now().utcoffset() == datetime.now().astimezone().utcoffset()
