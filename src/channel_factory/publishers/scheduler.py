@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime, time, timedelta, tzinfo
+from datetime import UTC, datetime, time, timedelta, timezone
 from enum import StrEnum
 from pathlib import Path
 
@@ -39,6 +39,20 @@ from channel_factory.db.session import Database
 from channel_factory.publishers.service import PublishingService, PublishOutcome
 
 logger = get_logger(__name__)
+
+# Moscow currently uses UTC+3 year-round. Explicit offset also works on Windows
+# without depending on the host timezone or an installed IANA timezone database.
+MOSCOW = timezone(timedelta(hours=3), name="MSK")
+
+
+def moscow_time(moment: datetime | None = None) -> datetime:
+    """Naive CLI dates mean Moscow wall time; aware dates denote an instant."""
+    if moment is None:
+        return datetime.now(MOSCOW)
+    if moment.tzinfo is None:
+        return moment.replace(tzinfo=MOSCOW)
+    return moment.astimezone(MOSCOW)
+
 
 #: A publication in one of these states occupies its slot.
 OCCUPYING_STATUSES = (PublicationStatus.PUBLISHED, PublicationStatus.SIMULATED)
@@ -165,7 +179,6 @@ class PostingScheduler:
         window: timedelta,
         own_slot_indexes: frozenset[int] = frozenset(),
         topics_path: Path | None = None,
-        timezone: tzinfo | None = None,
         max_topic_age: timedelta | None = None,
         breaking: BreakingRules | None = None,
     ) -> None:
@@ -178,27 +191,19 @@ class PostingScheduler:
         # its own, so this is a deliberate reservation, not a fallback.
         self._own_slot_indexes = own_slot_indexes
         self._topics_path = topics_path
-        # Слоты живут в поясе канала. Пояс машины сюда не попадает намеренно:
-        # один и тот же конвейер должен публиковать в одно и то же время
-        # локально, где бы он ни крутился.
-        self._timezone = timezone
         # Stale news is worse than no news: the reader learns the channel is
         # behind, which is exactly the reputation an automated feed must avoid.
         self._max_topic_age = max_topic_age
         self._breaking = breaking or BreakingRules()
 
-    def now(self) -> datetime:
-        """Current time in the channel's timezone."""
-        return datetime.now(self._timezone) if self._timezone else datetime.now().astimezone()
-
     async def run_once(self, now: datetime | None = None) -> SchedulerOutcome:
         """Publish breaking news if there is any, otherwise fill the open slot."""
-        moment = now or self.now()
+        moment = moscow_time(now)
 
         hot = await self.breaking_cluster(moment)
         if hot is not None:
             logger.info("scheduler.publishing.breaking", extra={"cluster": str(hot.id)})
-            outcome = await self._service.publish_cluster(hot.id)
+            outcome = await self._service.publish_cluster(hot.id, breaking=True)
             return SchedulerOutcome(
                 action=SchedulerAction.BREAKING, outcome=outcome, cluster_id=hot.id
             )
@@ -283,7 +288,7 @@ class PostingScheduler:
                     .limit(1)
                 )
             ).scalar_one_or_none()
-            day_start = now.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+            day_start = moscow_time(now).replace(hour=0, minute=0, second=0, microsecond=0)
             today = (
                 await session.execute(
                     select(func.count())
@@ -398,7 +403,7 @@ class PostingScheduler:
 
     async def upcoming(self, days: int = 1, now: datetime | None = None) -> list[Slot]:
         """Slots from now until ``days`` ahead — what the plan looks like."""
-        moment = now or self.now()
+        moment = moscow_time(now)
         plan: list[Slot] = []
         for offset in range(days):
             for slot in slots_for_day(

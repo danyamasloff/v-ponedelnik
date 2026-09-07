@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import uuid
 from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
 
 import typer
 from sqlalchemy import select
@@ -55,7 +54,6 @@ def _scheduler(database: Database, service: PublishingService) -> PostingSchedul
         window=timedelta(minutes=settings.publish_slot_window_minutes),
         own_slot_indexes=parse_own_slots(settings.publish_own_slots),
         topics_path=settings.evergreen_topics_config,
-        timezone=ZoneInfo(settings.publish_timezone),
         max_topic_age=timedelta(hours=settings.publish_max_topic_age_hours),
         breaking=BreakingRules(
             enabled=settings.breaking_enabled,
@@ -240,7 +238,7 @@ def publish_due(
     moment = None
     if now:
         try:
-            moment = datetime.fromisoformat(now).astimezone()
+            moment = datetime.fromisoformat(now)
         except ValueError as exc:
             typer.secho(f"Не разобрал время: {now}", fg=typer.colors.RED)
             raise typer.Exit(code=2) from exc
@@ -303,7 +301,7 @@ async def _publish_plan(days: int) -> None:
         client, service = await _service(database)
         scheduler = _scheduler(database, service)
         window = settings.publish_slot_window_minutes
-        typer.echo(f"Слоты в день: {settings.publish_slots}  (окно {window} мин)")
+        typer.echo(f"Слоты в день: {settings.publish_slots} МСК (UTC+3)  (окно {window} мин)")
         available = len(await _selected_unpublished(database))
         own_left = await _own_topics_left(scheduler)
         own_slots = sorted(parse_own_slots(settings.publish_own_slots))
